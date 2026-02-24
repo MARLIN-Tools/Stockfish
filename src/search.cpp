@@ -45,6 +45,7 @@
 #include "syzygy/tbprobe.h"
 #include "thread.h"
 #include "timeman.h"
+#include "tune.h"
 #include "tt.h"
 #include "types.h"
 #include "uci.h"
@@ -68,14 +69,19 @@ constexpr int SEARCHEDLIST_CAPACITY = 32;
 using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
 // Tunable guards for dominated-square LMR.
-constexpr bool EnableDominatedLMRFix1 = true;
-constexpr bool EnableDominatedLMRFix2 = true;
-constexpr bool EnableDominatedLMRFix3 = true;
+int DominatedLMRFix1 = 1;
+int DominatedLMRFix2 = 1;
+int DominatedLMRFix3 = 1;
 
-constexpr int DominatedLMRPressureThreshold = 2;
-constexpr int DominatedLMRLegacyReduction   = 1024;
-constexpr int DominatedLMRReductionFix1     = 512;
-constexpr int DominatedLMRLateMoveThreshold = 4;
+int DominatedLMRPressureThreshold = 2;
+int DominatedLMRLegacyReduction   = 1024;
+int DominatedLMRReductionFix1     = 512;
+int DominatedLMRLateMoveThreshold = 4;
+
+TUNE(SetRange(0, 1), DominatedLMRFix1, DominatedLMRFix2, DominatedLMRFix3);
+TUNE(SetRange(1, 4), DominatedLMRPressureThreshold);
+TUNE(SetRange(256, 1536), DominatedLMRLegacyReduction, DominatedLMRReductionFix1);
+TUNE(SetRange(1, 12), DominatedLMRLateMoveThreshold);
 
 // (*Scalers):
 // The values with Scaler asterisks have proven non-linear scaling.
@@ -1056,14 +1062,14 @@ moves_loop:  // When in check, search starts here
 
         // Increase reduction for quiet moves to heavily controlled squares.
         if (!ss->inCheck && !capture && !givesCheck && move.type_of() == NORMAL
-            && (!EnableDominatedLMRFix2 || moveCount > DominatedLMRLateMoveThreshold)
-            && (!EnableDominatedLMRFix3 || (!PvNode && !ss->ttPv)))
+            && (!DominatedLMRFix2 || moveCount > DominatedLMRLateMoveThreshold)
+            && (!DominatedLMRFix3 || (!PvNode && !ss->ttPv)))
         {
             Bitboard attackers = pos.attackers_to(move.to_sq());
             int      pressure  = popcount(attackers & pos.pieces(~us)) - popcount(attackers & pos.pieces(us));
 
             if (pressure >= DominatedLMRPressureThreshold)
-                r += EnableDominatedLMRFix1 ? DominatedLMRReductionFix1 : DominatedLMRLegacyReduction;
+                r += DominatedLMRFix1 ? DominatedLMRReductionFix1 : DominatedLMRLegacyReduction;
         }
 
         // Step 14. Pruning at shallow depths.
