@@ -1044,6 +1044,16 @@ moves_loop:  // When in check, search starts here
         if (ss->ttPv)
             r += 949;
 
+        // Increase reduction for quiet moves to heavily controlled squares.
+        if (!ss->inCheck && !capture && !givesCheck && move.type_of() == NORMAL)
+        {
+            Bitboard attackers = pos.attackers_to(move.to_sq());
+            int      pressure  = popcount(attackers & pos.pieces(~us)) - popcount(attackers & pos.pieces(us));
+
+            if (pressure >= 2)
+                r += 1024;
+        }
+
         // Step 14. Pruning at shallow depths.
         // Depth conditions are important for mate finding.
         if (!rootNode && pos.non_pawn_material(us) && !is_loss(bestValue))
