@@ -67,6 +67,11 @@ namespace {
 constexpr int SEARCHEDLIST_CAPACITY = 32;
 using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
+// B18-tuned dominated-square LMR settings.
+constexpr int DominatedLMRPressureThreshold = 4;
+constexpr int DominatedLMRLegacyReduction   = 256;
+constexpr int DominatedLMRLateMoveThreshold = 12;
+
 // (*Scalers):
 // The values with Scaler asterisks have proven non-linear scaling.
 // They are optimized to time controls of 180 + 1.8 and longer,
@@ -1045,13 +1050,14 @@ moves_loop:  // When in check, search starts here
             r += 949;
 
         // Increase reduction for quiet moves to heavily controlled squares.
-        if (!ss->inCheck && !capture && !givesCheck && move.type_of() == NORMAL)
+        if (!ss->inCheck && !capture && !givesCheck && move.type_of() == NORMAL
+            && moveCount > DominatedLMRLateMoveThreshold && !PvNode && !ss->ttPv)
         {
             Bitboard attackers = pos.attackers_to(move.to_sq());
             int      pressure  = popcount(attackers & pos.pieces(~us)) - popcount(attackers & pos.pieces(us));
 
-            if (pressure >= 2)
-                r += 1024;
+            if (pressure >= DominatedLMRPressureThreshold)
+                r += DominatedLMRLegacyReduction;
         }
 
         // Step 14. Pruning at shallow depths.
