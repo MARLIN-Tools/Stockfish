@@ -353,7 +353,7 @@ void Position::set_state() const {
     st->nonPawnKey[WHITE] = st->nonPawnKey[BLACK] = 0;
     st->pawnKey                                   = Zobrist::noPawns;
     st->nonPawnMaterial[WHITE] = st->nonPawnMaterial[BLACK] = VALUE_ZERO;
-    st->attackersCacheValid = 0;
+    st->attackersCacheSq = SQ_NONE;
     st->checkersBB = attackers_to(square<KING>(sideToMove)) & pieces(~sideToMove);
 
     set_check_info();
@@ -516,16 +516,12 @@ Bitboard Position::attackers_to(Square s, Bitboard occupied) const {
     if (occupied != pieces())
         return compute_attackers(occupied);
 
-    const unsigned idx  = unsigned(s) & 7U;
-    const uint8_t  mask = uint8_t(1U << idx);
-
-    if ((st->attackersCacheValid & mask) && st->attackersCacheSq[idx] == uint8_t(s))
-        return st->attackersCacheBb[idx];
+    if (st->attackersCacheSq == s)
+        return st->attackersCacheBb;
 
     Bitboard bb = compute_attackers(occupied);
-    st->attackersCacheSq[idx] = uint8_t(s);
-    st->attackersCacheBb[idx] = bb;
-    st->attackersCacheValid |= mask;
+    st->attackersCacheSq = s;
+    st->attackersCacheBb = bb;
     return bb;
 }
 
@@ -746,7 +742,7 @@ void Position::do_move(Move                      m,
     std::memcpy(&newSt, st, offsetof(StateInfo, key));
     newSt.previous = st;
     st             = &newSt;
-    st->attackersCacheValid = 0;  // Clear attackers_to() cache for the new node.
+    st->attackersCacheSq = SQ_NONE;  // Clear attackers_to() cache for the new node.
 
     // Increment ply counters. In particular, rule50 will be reset to zero later on
     // in case of a capture or a pawn move.
@@ -1259,7 +1255,7 @@ void Position::do_null_move(StateInfo& newSt) {
 
     newSt.previous = st;
     st             = &newSt;
-    st->attackersCacheValid = 0;  // Clear attackers_to() cache for the new node.
+    st->attackersCacheSq = SQ_NONE;  // Clear attackers_to() cache for the new node.
 
     if (st->epSquare != SQ_NONE)
     {

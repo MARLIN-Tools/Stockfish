@@ -55,10 +55,9 @@ struct StateInfo {
     // Not copied when making a move (will be recomputed anyhow)
     Key        key;
     Bitboard   checkersBB;
-    // Small direct-mapped cache for attackers_to() when occupied == pieces().
-    uint8_t    attackersCacheValid;
-    uint8_t    attackersCacheSq[8];
-    Bitboard   attackersCacheBb[8];
+    // Single-entry cache for attackers_to() when occupied == pieces().
+    Square     attackersCacheSq;
+    Bitboard   attackersCacheBb;
     StateInfo* previous;
     Bitboard   blockersForKing[COLOR_NB];
     Bitboard   pinners[COLOR_NB];
