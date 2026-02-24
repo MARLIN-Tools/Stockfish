@@ -353,6 +353,7 @@ void Position::set_state() const {
     st->nonPawnKey[WHITE] = st->nonPawnKey[BLACK] = 0;
     st->pawnKey                                   = Zobrist::noPawns;
     st->nonPawnMaterial[WHITE] = st->nonPawnMaterial[BLACK] = VALUE_ZERO;
+    st->attackersCacheValid = 0;
     st->checkersBB = attackers_to(square<KING>(sideToMove)) & pieces(~sideToMove);
 
     set_check_info();
@@ -503,15 +504,35 @@ void Position::update_slider_blockers(Color c) const {
 // Computes a bitboard of all pieces which attack a given square.
 // Slider attacks use the occupied bitboard to indicate occupancy.
 Bitboard Position::attackers_to(Square s, Bitboard occupied) const {
+    auto compute_attackers = [&](Bitboard occ) {
+        return (attacks_bb<ROOK>(s, occ) & pieces(ROOK, QUEEN))
+             | (attacks_bb<BISHOP>(s, occ) & pieces(BISHOP, QUEEN))
+             | (attacks_bb<PAWN>(s, BLACK) & pieces(WHITE, PAWN))
+             | (attacks_bb<PAWN>(s, WHITE) & pieces(BLACK, PAWN))
+             | (attacks_bb<KNIGHT>(s) & pieces(KNIGHT)) | (attacks_bb<KING>(s) & pieces(KING));
+    };
 
-    return (attacks_bb<ROOK>(s, occupied) & pieces(ROOK, QUEEN))
-         | (attacks_bb<BISHOP>(s, occupied) & pieces(BISHOP, QUEEN))
-         | (attacks_bb<PAWN>(s, BLACK) & pieces(WHITE, PAWN))
-         | (attacks_bb<PAWN>(s, WHITE) & pieces(BLACK, PAWN))
-         | (attacks_bb<KNIGHT>(s) & pieces(KNIGHT)) | (attacks_bb<KING>(s) & pieces(KING));
+    // Cache only board-occupancy queries.
+    if (occupied != pieces())
+        return compute_attackers(occupied);
+
+    const unsigned idx  = unsigned(s) & 7U;
+    const uint8_t  mask = uint8_t(1U << idx);
+
+    if ((st->attackersCacheValid & mask) && st->attackersCacheSq[idx] == uint8_t(s))
+        return st->attackersCacheBb[idx];
+
+    Bitboard bb = compute_attackers(occupied);
+    st->attackersCacheSq[idx] = uint8_t(s);
+    st->attackersCacheBb[idx] = bb;
+    st->attackersCacheValid |= mask;
+    return bb;
 }
 
 bool Position::attackers_to_exist(Square s, Bitboard occupied, Color c) const {
+
+    if (occupied == pieces())
+        return attackers_to(s, occupied) & pieces(c);
 
     return ((attacks_bb<ROOK>(s) & pieces(c, ROOK, QUEEN))
             && (attacks_bb<ROOK>(s, occupied) & pieces(c, ROOK, QUEEN)))
@@ -725,6 +746,7 @@ void Position::do_move(Move                      m,
     std::memcpy(&newSt, st, offsetof(StateInfo, key));
     newSt.previous = st;
     st             = &newSt;
+    st->attackersCacheValid = 0;  // Clear attackers_to() cache for the new node.
 
     // Increment ply counters. In particular, rule50 will be reset to zero later on
     // in case of a capture or a pawn move.
@@ -1237,6 +1259,7 @@ void Position::do_null_move(StateInfo& newSt) {
 
     newSt.previous = st;
     st             = &newSt;
+    st->attackersCacheValid = 0;  // Clear attackers_to() cache for the new node.
 
     if (st->epSquare != SQ_NONE)
     {
