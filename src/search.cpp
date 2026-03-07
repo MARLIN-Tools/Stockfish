@@ -45,6 +45,7 @@
 #include "syzygy/tbprobe.h"
 #include "thread.h"
 #include "timeman.h"
+#include "tune.h"
 #include "tt.h"
 #include "types.h"
 #include "uci.h"
@@ -66,6 +67,20 @@ namespace {
 
 constexpr int SEARCHEDLIST_CAPACITY = 32;
 using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
+
+int AsymAlphaDiv        = 64;
+int AsymAlphaClamp      = 4;
+int AsymAlphaMinAbs     = 24;
+int AsymDepthThreshold  = 6;
+int AsymLMRScale        = 64;
+int AsymFutilityScale   = 24;
+
+TUNE(SetRange(1, 256), AsymAlphaDiv);
+TUNE(SetRange(0, 16), AsymAlphaClamp);
+TUNE(SetRange(0, 256), AsymAlphaMinAbs);
+TUNE(SetRange(1, 12), AsymDepthThreshold);
+TUNE(SetRange(-256, 256), AsymLMRScale);
+TUNE(SetRange(-128, 128), AsymFutilityScale);
 
 // (*Scalers):
 // The values with Scaler asterisks have proven non-linear scaling.
@@ -1040,7 +1055,9 @@ moves_loop:  // When in check, search starts here
         int delta = beta - alpha;
 
         Depth r = reduction(improving, depth, moveCount, delta);
-        int   asymAlpha = std::clamp(int(alpha) / 64, -4, 4);
+        const int asymClamp = std::max(0, AsymAlphaClamp);
+        int       asymAlpha =
+          std::clamp(int(alpha) / std::max(1, AsymAlphaDiv), -asymClamp, asymClamp);
 
         // Increase reduction for ttPv nodes (*Scaler)
         // Larger values scale well
@@ -1048,8 +1065,8 @@ moves_loop:  // When in check, search starts here
             r += 949;
 
         // Asymmetric depth bias: push deeper when ahead, simplify when behind.
-        if (!rootNode && !PvNode && depth >= 6 && std::abs(alpha) > 24)
-            r -= asymAlpha * 64;
+        if (!rootNode && !PvNode && depth >= AsymDepthThreshold && std::abs(alpha) > AsymAlphaMinAbs)
+            r -= asymAlpha * AsymLMRScale;
 
         // Step 14. Pruning at shallow depths.
         // Depth conditions are important for mate finding.
@@ -1100,7 +1117,8 @@ moves_loop:  // When in check, search starts here
                 lmrDepth += history / 2917;
 
                 Value futilityValue = ss->staticEval + 42 + 157 * !bestMove + 120 * lmrDepth
-                                    + 86 * (ss->staticEval > alpha) + 24 * asymAlpha;
+                                    + 86 * (ss->staticEval > alpha)
+                                    + AsymFutilityScale * asymAlpha;
 
                 // Futility pruning: parent node
                 // (*Scaler): Generally, more frequent futility pruning
