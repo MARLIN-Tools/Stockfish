@@ -70,14 +70,16 @@ using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
 int AsymAlphaDiv        = 64;
 int AsymAlphaClamp      = 4;
-int AsymAlphaMinAbs     = 24;
+int AsymWinningValue    = 1;
+int AsymLosingValue     = -1;
 int AsymDepthThreshold  = 6;
 int AsymLMRScale        = 64;
 int AsymFutilityScale   = 24;
 
 TUNE(SetRange(1, 256), AsymAlphaDiv);
 TUNE(SetRange(0, 16), AsymAlphaClamp);
-TUNE(SetRange(0, 256), AsymAlphaMinAbs);
+TUNE(SetRange(0, 512), AsymWinningValue);
+TUNE(SetRange(-512, 0), AsymLosingValue);
 TUNE(SetRange(1, 12), AsymDepthThreshold);
 TUNE(SetRange(-256, 256), AsymLMRScale);
 TUNE(SetRange(-128, 128), AsymFutilityScale);
@@ -1055,9 +1057,14 @@ moves_loop:  // When in check, search starts here
         int delta = beta - alpha;
 
         Depth r = reduction(improving, depth, moveCount, delta);
-        const int asymClamp = std::max(0, AsymAlphaClamp);
-        int       asymAlpha =
-          std::clamp(int(alpha) / std::max(1, AsymAlphaDiv), -asymClamp, asymClamp);
+        const int asymClamp     = std::max(0, AsymAlphaClamp);
+        const bool asymWinning  = int(alpha) >= AsymWinningValue;
+        const bool asymLosing   = int(alpha) <= AsymLosingValue;
+        const bool asymActive   = asymWinning || asymLosing;
+        int       asymAlpha     = 0;
+
+        if (asymActive)
+            asymAlpha = std::clamp(int(alpha) / std::max(1, AsymAlphaDiv), -asymClamp, asymClamp);
 
         // Increase reduction for ttPv nodes (*Scaler)
         // Larger values scale well
@@ -1065,7 +1072,7 @@ moves_loop:  // When in check, search starts here
             r += 949;
 
         // Asymmetric depth bias: push deeper when ahead, simplify when behind.
-        if (!rootNode && !PvNode && depth >= AsymDepthThreshold && std::abs(alpha) > AsymAlphaMinAbs)
+        if (!rootNode && !PvNode && depth >= AsymDepthThreshold && asymActive)
             r -= asymAlpha * AsymLMRScale;
 
         // Step 14. Pruning at shallow depths.
