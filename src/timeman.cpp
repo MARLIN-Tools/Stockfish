@@ -128,10 +128,16 @@ void TimeManagement::init(Search::LimitsType& limits,
         maxScale = 1.3 + 0.11 * (centiMTG / 100.0);
     }
 
-    // Limit the maximum possible time for this move
+    // Limit the maximum possible time for this move.
+    // In low-increment sudden-death conditions we keep a tighter hard cap
+    // to reduce time-loss risk when clocks get volatile.
+    double hardCap = 0.825079 * limits.time[us] - moveOverhead;
+    if (limits.movestogo == 0 && limits.inc[us] * 20 <= limits.time[us])
+        hardCap = std::min(hardCap, 0.790000 * limits.time[us] + 0.750000 * limits.inc[us]
+                                      - moveOverhead);
+
     optimumTime = TimePoint(optScale * timeLeft);
-    maximumTime =
-      TimePoint(std::min(0.825179 * limits.time[us] - moveOverhead, maxScale * optimumTime)) - 10;
+    maximumTime = TimePoint(std::min(hardCap, maxScale * optimumTime)) - 10;
 
     if (options["Ponder"])
         optimumTime += optimumTime / 4;
