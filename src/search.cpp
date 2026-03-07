@@ -1040,11 +1040,16 @@ moves_loop:  // When in check, search starts here
         int delta = beta - alpha;
 
         Depth r = reduction(improving, depth, moveCount, delta);
+        int   asymAlpha = std::clamp(int(alpha) / 64, -4, 4);
 
         // Increase reduction for ttPv nodes (*Scaler)
         // Larger values scale well
         if (ss->ttPv)
             r += 949;
+
+        // Asymmetric depth bias: push deeper when ahead, simplify when behind.
+        if (!rootNode && !PvNode && depth >= 6 && std::abs(alpha) > 24)
+            r -= asymAlpha * 64;
 
         // Step 14. Pruning at shallow depths.
         // Depth conditions are important for mate finding.
@@ -1095,7 +1100,7 @@ moves_loop:  // When in check, search starts here
                 lmrDepth += history / 2917;
 
                 Value futilityValue = ss->staticEval + 42 + 157 * !bestMove + 120 * lmrDepth
-                                    + 86 * (ss->staticEval > alpha);
+                                    + 86 * (ss->staticEval > alpha) + 24 * asymAlpha;
 
                 // Futility pruning: parent node
                 // (*Scaler): Generally, more frequent futility pruning
