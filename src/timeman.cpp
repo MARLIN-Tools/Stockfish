@@ -135,6 +135,10 @@ void TimeManagement::init(Search::LimitsType& limits,
 
     if (options["Ponder"])
         optimumTime += optimumTime / 4;
+
+    // Enforce a sane ordering for time bounds.
+    maximumTime = std::max(TimePoint(0), maximumTime);
+    optimumTime = std::max(TimePoint(0), std::min(optimumTime, maximumTime));
 }
 
 }  // namespace Stockfish
