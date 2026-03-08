@@ -133,6 +133,23 @@ void TimeManagement::init(Search::LimitsType& limits,
     maximumTime =
       TimePoint(std::min(0.825179 * limits.time[us] - moveOverhead, maxScale * optimumTime)) - 10;
 
+    // Under very low clocks with small increments, formulas above can yield a
+    // near-zero soft bound (optimum) and even negative hard bound (maximum),
+    // which can trigger repeated depth-1 moves.
+    // Keep a small safe floor while preserving move overhead margin.
+    TimePoint safeHardCap = std::max(TimePoint(1), limits.time[us] - moveOverhead - 1);
+    if (limits.movestogo == 0 && limits.inc[us] > 0)
+    {
+        TimePoint minHard = std::min(safeHardCap, std::max(TimePoint(1), limits.inc[us] / 4));
+        TimePoint minSoft = std::max(TimePoint(1), minHard / 2);
+
+        optimumTime = std::max(optimumTime, minSoft);
+        maximumTime = std::max(maximumTime, minHard);
+    }
+
+    optimumTime = std::min(optimumTime, safeHardCap);
+    maximumTime = std::min(std::max(maximumTime, optimumTime), safeHardCap);
+
     if (options["Ponder"])
         optimumTime += optimumTime / 4;
 }
