@@ -77,7 +77,7 @@ int AsymLMRScale        = 64;
 int AsymFutilityScale   = 24;
 
 TUNE(SetRange(1, 256), AsymAlphaDiv);
-TUNE(SetRange(0, 16), AsymAlphaClamp);
+TUNE(SetRange(1, 16), AsymAlphaClamp);
 TUNE(SetRange(0, 512), AsymWinningValue);
 TUNE(SetRange(-512, 0), AsymLosingValue);
 TUNE(SetRange(1, 12), AsymDepthThreshold);
@@ -1057,7 +1057,7 @@ moves_loop:  // When in check, search starts here
         int delta = beta - alpha;
 
         Depth r = reduction(improving, depth, moveCount, delta);
-        const int asymClamp     = std::max(0, AsymAlphaClamp);
+        const int asymClamp     = std::max(1, AsymAlphaClamp);
         const bool asymWinning  = int(alpha) >= AsymWinningValue;
         const bool asymLosing   = int(alpha) <= AsymLosingValue;
         const bool asymActive   = asymWinning || asymLosing;
