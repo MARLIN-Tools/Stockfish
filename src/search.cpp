@@ -1876,18 +1876,17 @@ void update_continuation_histories(Stack* ss, Piece pc, Square to, int bonus) {
     // Multipliers for positive history consistency
     constexpr int CMHCMultipliers[] = {87, 94, 106, 118, 114, 128, 128};
     int           positiveCount     = 0;
+    int           updateCount       = ss->inCheck ? 2 : 6;
 
-    for (const auto [i, weight] : conthist_bonuses)
+    for (int idx = 0; idx < updateCount; ++idx)
     {
-        // Only update the first 2 continuation histories if we are in check
-        if (ss->inCheck && i > 2)
-            break;
+        const int i      = conthist_bonuses[idx].index;
+        const int weight = conthist_bonuses[idx].weight;
 
         if (((ss - i)->currentMove).is_ok())
         {
             auto& historyEntry = (*(ss - i)->continuationHistory)[pc][to];
-            if (historyEntry > 0)
-                positiveCount++;
+            positiveCount += historyEntry > 0;
 
             int multiplier = CMHCMultipliers[positiveCount];
             historyEntry << (bonus * weight * multiplier / 131072) + 82 * (i < 2);
