@@ -51,6 +51,7 @@ Value evaluate(const NNUE::Networks&          networks,
                Eval::NNUE::AccumulatorStack&  accumulators,
                Eval::NNUE::AccumulatorCaches& caches,
                int                            optimism);
+int   pawn_structure_score(const Position& pos);
 }  // namespace Eval
 
 }  // namespace Stockfish

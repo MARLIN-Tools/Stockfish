@@ -30,6 +30,7 @@
 
 #include "nnue/network.h"
 #include "nnue/nnue_misc.h"
+#include "pawnhash.h"
 #include "position.h"
 #include "types.h"
 #include "uci.h"
@@ -47,6 +48,11 @@ int Eval::simple_eval(const Position& pos) {
 }
 
 bool Eval::use_smallnet(const Position& pos) { return std::abs(simple_eval(pos)) > 962; }
+
+int Eval::pawn_structure_score(const Position& pos) {
+    int score = PawnHash::probe(pos);
+    return pos.side_to_move() == WHITE ? score : -score;
+}
 
 // Evaluate is the evaluator for the outer world. It returns a static evaluation
 // of the position from the point of view of the side to move.
@@ -77,8 +83,11 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     optimism += optimism * nnueComplexity / 476;
     nnue -= nnue * nnueComplexity / 18236;
 
-    int material = 534 * pos.count<PAWN>() + pos.non_pawn_material();
-    int v        = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+    int material  = 534 * pos.count<PAWN>() + pos.non_pawn_material();
+    int pawnScore = pawn_structure_score(pos);
+    int v         = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+
+    v += pawnScore;
 
     // Damp down the evaluation linearly when shuffling
     v -= v * pos.rule50_count() / 199;
@@ -114,6 +123,9 @@ std::string Eval::trace(Position& pos, const Eval::NNUE::Networks& networks) {
 
     v = evaluate(networks, pos, *accumulators, *caches, VALUE_ZERO);
     v = pos.side_to_move() == WHITE ? v : -v;
+    ss << "Pawn hash term         "
+       << 0.01 * (pos.side_to_move() == WHITE ? pawn_structure_score(pos) : -pawn_structure_score(pos))
+       << " (white side)\n";
     ss << "Final evaluation       " << 0.01 * UCIEngine::to_cp(v, pos) << " (white side)";
     ss << " [with scaled NNUE, ...]";
     ss << "\n";

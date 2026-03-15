@@ -35,6 +35,7 @@
 #include "nnue/nnue_common.h"
 #include "nnue/nnue_misc.h"
 #include "numa.h"
+#include "pawnhash.h"
 #include "perft.h"
 #include "position.h"
 #include "search.h"
@@ -93,6 +94,12 @@ Engine::Engine(std::optional<std::string> path) :
       }));
 
     options.add(  //
+      "PawnHash", Option(16, 0, MaxHashMB, [](const Option& o) {
+          PawnHash::resize(o);
+          return std::nullopt;
+      }));
+
+    options.add(  //
       "Clear Hash", Option([this](const Option&) {
           search_clear();
           return std::nullopt;
@@ -147,6 +154,7 @@ Engine::Engine(std::optional<std::string> path) :
     threads.clear();
     threads.ensure_network_replicated();
     resize_threads();
+    PawnHash::resize(options["PawnHash"]);
 }
 
 std::uint64_t Engine::perft(const std::string& fen, Depth depth, bool isChess960) {
@@ -167,6 +175,7 @@ void Engine::search_clear() {
     wait_for_search_finished();
 
     tt.clear(threads);
+    PawnHash::clear();
     threads.clear();
 
     // @TODO wont work with multiple instances
