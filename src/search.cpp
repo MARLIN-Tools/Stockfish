@@ -46,6 +46,7 @@
 #include "thread.h"
 #include "timeman.h"
 #include "tt.h"
+#include "tune.h"
 #include "types.h"
 #include "uci.h"
 #include "ucioption.h"
@@ -63,6 +64,22 @@ void syzygy_extend_pv(const OptionsMap&            options,
 using namespace Search;
 
 namespace {
+
+int FutilityDepthLinear    = 100;
+int FutilityDepthQuadratic = 0;
+int FutilityBaseMult       = 76;
+int FutilityNoTTHitPenalty = 21;
+TUNE(SetRange(0, 200), FutilityDepthLinear);
+TUNE(SetRange(0, 100), FutilityDepthQuadratic);
+TUNE(SetRange(16, 160), FutilityBaseMult);
+TUNE(SetRange(0, 64), FutilityNoTTHitPenalty);
+
+Depth adjusted_futility_depth(Depth d) {
+    int64_t linear = int64_t(d) * FutilityDepthLinear / 100;
+    int64_t quad   = int64_t(d) * d * FutilityDepthQuadratic / 10000;
+
+    return Depth(std::clamp<int64_t>(linear + quad, 0, MAX_PLY));
+}
 
 constexpr int SEARCHEDLIST_CAPACITY = 32;
 using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
@@ -897,9 +914,9 @@ Value Search::Worker::search(
     // The depth condition is important for mate finding.
     {
         auto futility_margin = [&](Depth d) {
-            Value futilityMult = 76 - 21 * !ss->ttHit;
+            Value futilityMult = FutilityBaseMult - FutilityNoTTHitPenalty * !ss->ttHit;
 
-            return futilityMult * d
+            return futilityMult * adjusted_futility_depth(d)
                  - (2686 * improving + 362 * opponentWorsening) * futilityMult / 1024  //
                  + std::abs(correctionValue) / 180600;
         };
