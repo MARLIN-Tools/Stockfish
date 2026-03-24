@@ -31,11 +31,31 @@
 #include "nnue/network.h"
 #include "nnue/nnue_misc.h"
 #include "position.h"
+#include "tune.h"
 #include "types.h"
 #include "uci.h"
 #include "nnue/nnue_accumulator.h"
 
 namespace Stockfish {
+
+int NnueComplexityLinear    = 100;
+int NnueComplexityQuadratic = 0;
+TUNE(SetRange(0, 200), NnueComplexityLinear);
+TUNE(SetRange(0, 100), NnueComplexityQuadratic);
+
+namespace {
+
+int adjusted_nnue_complexity(int nnueComplexity) {
+
+    // Default parameters keep master behavior exactly:
+    // adjusted = 100% * complexity + 0 * complexity^2
+    int64_t linear = int64_t(nnueComplexity) * NnueComplexityLinear / 100;
+    int64_t quad   = int64_t(nnueComplexity) * nnueComplexity * NnueComplexityQuadratic / 10000;
+
+    return int(std::clamp<int64_t>(linear + quad, 0, 1000000));
+}
+
+}  // namespace
 
 // Returns a static, purely materialistic evaluation of the position from
 // the point of view of the side to move. It can be divided by PawnValue to get
@@ -73,7 +93,7 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     }
 
     // Blend optimism and eval with nnue complexity
-    int nnueComplexity = std::abs(psqt - positional);
+    int nnueComplexity = adjusted_nnue_complexity(std::abs(psqt - positional));
     optimism += optimism * nnueComplexity / 476;
     nnue -= nnue * nnueComplexity / 18236;
 
