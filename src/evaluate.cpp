@@ -40,15 +40,16 @@ namespace Stockfish {
 
 int NnueComplexityLinear    = 100;
 int NnueComplexityQuadratic = 0;
+int NnueComplexityOptimismDiv = 476;
+int NnueComplexityEvalDiv     = 18236;
 TUNE(SetRange(0, 200), NnueComplexityLinear);
 TUNE(SetRange(0, 100), NnueComplexityQuadratic);
+TUNE(SetRange(100, 2000), NnueComplexityOptimismDiv);
+TUNE(SetRange(1000, 50000), NnueComplexityEvalDiv);
 
 namespace {
 
 int adjusted_nnue_complexity(int nnueComplexity) {
-
-    // Default parameters keep master behavior exactly:
-    // adjusted = 100% * complexity + 0 * complexity^2
     int64_t linear = int64_t(nnueComplexity) * NnueComplexityLinear / 100;
     int64_t quad   = int64_t(nnueComplexity) * nnueComplexity * NnueComplexityQuadratic / 10000;
 
@@ -92,10 +93,9 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
         smallNet                   = false;
     }
 
-    // Blend optimism and eval with nnue complexity
     int nnueComplexity = adjusted_nnue_complexity(std::abs(psqt - positional));
-    optimism += optimism * nnueComplexity / 476;
-    nnue -= nnue * nnueComplexity / 18236;
+    optimism += optimism * nnueComplexity / NnueComplexityOptimismDiv;
+    nnue -= nnue * nnueComplexity / NnueComplexityEvalDiv;
 
     int material = 534 * pos.count<PAWN>() + pos.non_pawn_material();
     int v        = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
