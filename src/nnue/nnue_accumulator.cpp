@@ -705,21 +705,32 @@ void update_accumulator_refresh_cache(Color                                 pers
     const Square             ksq   = pos.square<KING>(perspective);
     const Bitboard           occ   = pos.pieces();
     auto&                    ways  = cache(ksq, perspective);
-    auto*                    entry = &ways[0];
+    auto&                    hint  = cache.preferred_way(ksq, perspective);
+    const std::uint8_t       way0  = hint;
+    const std::uint8_t       way1  = way0 ^ 1;
+    auto*                    entry = &ways[way0];
     PSQFeatureSet::IndexList removed, added;
 
-    int bestDiff = popcount(entry->pieceBB ^ occ);
-    if (bestDiff > 2)
+    if (entry->pieceBB != occ)
     {
-        for (std::size_t i = 1; i < ways.size(); ++i)
+        auto* other = &ways[way1];
+
+        if (other->pieceBB == occ)
         {
-            const int diff = popcount(ways[i].pieceBB ^ occ);
-            if (diff < bestDiff)
+            entry = other;
+            hint  = way1;
+        }
+        else
+        {
+            int bestDiff = popcount(entry->pieceBB ^ occ);
+            if (bestDiff > 2)
             {
-                bestDiff = diff;
-                entry    = &ways[i];
-                if (diff <= 2)
-                    break;
+                const int otherDiff = popcount(other->pieceBB ^ occ);
+                if (otherDiff < bestDiff)
+                {
+                    entry = other;
+                    hint  = way1;
+                }
             }
         }
     }

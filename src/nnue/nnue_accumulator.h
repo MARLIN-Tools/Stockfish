@@ -91,14 +91,20 @@ struct AccumulatorCaches {
                 for (auto& entries2D : entries1D)
                     for (auto& entry : entries2D)
                         entry.clear(network.featureTransformer.biases);
+
+            for (auto& preferred1D : preferred)
+                preferred1D.fill(0);
         }
 
         std::array<Entry, RefreshCacheAssociativity>& operator()(Square sq, Color c) {
             return entries[sq][c];
         }
 
+        std::uint8_t& preferred_way(Square sq, Color c) { return preferred[sq][c]; }
+
         std::array<std::array<std::array<Entry, RefreshCacheAssociativity>, COLOR_NB>, SQUARE_NB>
           entries;
+        std::array<std::array<std::uint8_t, COLOR_NB>, SQUARE_NB> preferred;
     };
 
     template<typename Networks>
