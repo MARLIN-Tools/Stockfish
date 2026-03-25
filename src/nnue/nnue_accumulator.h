@@ -60,6 +60,8 @@ struct alignas(CacheLineSize) Accumulator {
 // is commonly referred to as "Finny Tables".
 struct AccumulatorCaches {
 
+    static constexpr std::size_t RefreshCacheAssociativity = 2;
+
     template<typename Networks>
     AccumulatorCaches(const Networks& networks) {
         clear(networks);
@@ -86,13 +88,17 @@ struct AccumulatorCaches {
         template<typename Network>
         void clear(const Network& network) {
             for (auto& entries1D : entries)
-                for (auto& entry : entries1D)
-                    entry.clear(network.featureTransformer.biases);
+                for (auto& entries2D : entries1D)
+                    for (auto& entry : entries2D)
+                        entry.clear(network.featureTransformer.biases);
         }
 
-        std::array<Entry, COLOR_NB>& operator[](Square sq) { return entries[sq]; }
+        std::array<Entry, RefreshCacheAssociativity>& operator()(Square sq, Color c) {
+            return entries[sq][c];
+        }
 
-        std::array<std::array<Entry, COLOR_NB>, SQUARE_NB> entries;
+        std::array<std::array<std::array<Entry, RefreshCacheAssociativity>, COLOR_NB>, SQUARE_NB>
+          entries;
     };
 
     template<typename Networks>

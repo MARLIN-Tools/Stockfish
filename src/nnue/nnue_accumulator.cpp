@@ -703,21 +703,39 @@ void update_accumulator_refresh_cache(Color                                 pers
     using Tiling [[maybe_unused]] = SIMDTiling<Dimensions, Dimensions, PSQTBuckets>;
 
     const Square             ksq   = pos.square<KING>(perspective);
-    auto&                    entry = cache[ksq][perspective];
+    const Bitboard           occ   = pos.pieces();
+    auto&                    ways  = cache(ksq, perspective);
+    auto*                    entry = &ways[0];
     PSQFeatureSet::IndexList removed, added;
 
-    const Bitboard changedBB = get_changed_pieces(entry.pieces, pos.piece_array());
-    Bitboard       removedBB = changedBB & entry.pieceBB;
-    Bitboard       addedBB   = changedBB & pos.pieces();
+    int bestDiff = popcount(entry->pieceBB ^ occ);
+    if (bestDiff > 2)
+    {
+        for (std::size_t i = 1; i < ways.size(); ++i)
+        {
+            const int diff = popcount(ways[i].pieceBB ^ occ);
+            if (diff < bestDiff)
+            {
+                bestDiff = diff;
+                entry    = &ways[i];
+                if (diff <= 2)
+                    break;
+            }
+        }
+    }
+
+    const Bitboard changedBB = get_changed_pieces(entry->pieces, pos.piece_array());
+    Bitboard       removedBB = changedBB & entry->pieceBB;
+    Bitboard       addedBB   = changedBB & occ;
 
 #if defined(USE_AVX512ICL)
-    PSQFeatureSet::write_indices(entry.pieces, pos.piece_array(), removedBB, addedBB, perspective,
+    PSQFeatureSet::write_indices(entry->pieces, pos.piece_array(), removedBB, addedBB, perspective,
                                  ksq, removed, added);
 #else
     while (removedBB)
     {
         Square sq = pop_lsb(removedBB);
-        removed.push_back(PSQFeatureSet::make_index(perspective, sq, entry.pieces[sq], ksq));
+        removed.push_back(PSQFeatureSet::make_index(perspective, sq, entry->pieces[sq], ksq));
     }
     while (addedBB)
     {
@@ -726,8 +744,8 @@ void update_accumulator_refresh_cache(Color                                 pers
     }
 #endif
 
-    entry.pieceBB = pos.pieces();
-    entry.pieces  = pos.piece_array();
+    entry->pieceBB = occ;
+    entry->pieces  = pos.piece_array();
 
     auto& accumulator                 = accumulatorState.acc<Dimensions>();
     accumulator.computed[perspective] = true;
@@ -742,7 +760,7 @@ void update_accumulator_refresh_cache(Color                                 pers
     {
         auto* accTile =
           reinterpret_cast<vec_t*>(&accumulator.accumulation[perspective][j * Tiling::TileHeight]);
-        auto* entryTile = reinterpret_cast<vec_t*>(&entry.accumulation[j * Tiling::TileHeight]);
+        auto* entryTile = reinterpret_cast<vec_t*>(&entry->accumulation[j * Tiling::TileHeight]);
 
         for (IndexType k = 0; k < Tiling::NumRegs; ++k)
             acc[k] = entryTile[k];
@@ -792,7 +810,7 @@ void update_accumulator_refresh_cache(Color                                 pers
         auto* accTilePsqt = reinterpret_cast<psqt_vec_t*>(
           &accumulator.psqtAccumulation[perspective][j * Tiling::PsqtTileHeight]);
         auto* entryTilePsqt =
-          reinterpret_cast<psqt_vec_t*>(&entry.psqtAccumulation[j * Tiling::PsqtTileHeight]);
+          reinterpret_cast<psqt_vec_t*>(&entry->psqtAccumulation[j * Tiling::PsqtTileHeight]);
 
         for (IndexType k = 0; k < Tiling::NumPsqtRegs; ++k)
             psqt[k] = entryTilePsqt[k];
@@ -830,25 +848,25 @@ void update_accumulator_refresh_cache(Color                                 pers
     {
         const IndexType offset = Dimensions * index;
         for (IndexType j = 0; j < Dimensions; ++j)
-            entry.accumulation[j] -= featureTransformer.weights[offset + j];
+            entry->accumulation[j] -= featureTransformer.weights[offset + j];
 
         for (std::size_t k = 0; k < PSQTBuckets; ++k)
-            entry.psqtAccumulation[k] -= featureTransformer.psqtWeights[index * PSQTBuckets + k];
+            entry->psqtAccumulation[k] -= featureTransformer.psqtWeights[index * PSQTBuckets + k];
     }
     for (const auto index : added)
     {
         const IndexType offset = Dimensions * index;
         for (IndexType j = 0; j < Dimensions; ++j)
-            entry.accumulation[j] += featureTransformer.weights[offset + j];
+            entry->accumulation[j] += featureTransformer.weights[offset + j];
 
         for (std::size_t k = 0; k < PSQTBuckets; ++k)
-            entry.psqtAccumulation[k] += featureTransformer.psqtWeights[index * PSQTBuckets + k];
+            entry->psqtAccumulation[k] += featureTransformer.psqtWeights[index * PSQTBuckets + k];
     }
 
     // The accumulator of the refresh entry has been updated.
     // Now copy its content to the actual accumulator we were refreshing.
-    accumulator.accumulation[perspective]     = entry.accumulation;
-    accumulator.psqtAccumulation[perspective] = entry.psqtAccumulation;
+    accumulator.accumulation[perspective]     = entry->accumulation;
+    accumulator.psqtAccumulation[perspective] = entry->psqtAccumulation;
 #endif
 }
 
