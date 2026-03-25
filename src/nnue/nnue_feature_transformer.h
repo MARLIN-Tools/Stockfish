@@ -387,23 +387,106 @@ class FeatureTransformer {
 
 #else
 
-            for (IndexType j = 0; j < HalfDimensions / 2; ++j)
-            {
-                BiasType sum0 = accumulation[static_cast<int>(perspectives[p])][j + 0];
-                BiasType sum1 =
-                  accumulation[static_cast<int>(perspectives[p])][j + HalfDimensions / 2];
+            constexpr IndexType Half = HalfDimensions / 2;
 
-                if constexpr (UseThreats)
+            const auto* acc0 = &accumulation[static_cast<int>(perspectives[p])][0];
+            const auto* acc1 = &accumulation[static_cast<int>(perspectives[p])][Half];
+            auto*       out  = &output[offset];
+
+            if constexpr (UseThreats)
+            {
+                const auto* thr0 = &threatAccumulation[static_cast<int>(perspectives[p])][0];
+                const auto* thr1 = &threatAccumulation[static_cast<int>(perspectives[p])][Half];
+
+                IndexType remaining = Half;
+                while (remaining >= 4)
                 {
-                    sum0 += threatAccumulation[static_cast<int>(perspectives[p])][j + 0];
-                    sum1 +=
-                      threatAccumulation[static_cast<int>(perspectives[p])][j + HalfDimensions / 2];
+                    BiasType sum00 = acc0[0] + thr0[0];
+                    BiasType sum10 = acc1[0] + thr1[0];
+                    BiasType sum01 = acc0[1] + thr0[1];
+                    BiasType sum11 = acc1[1] + thr1[1];
+                    BiasType sum02 = acc0[2] + thr0[2];
+                    BiasType sum12 = acc1[2] + thr1[2];
+                    BiasType sum03 = acc0[3] + thr0[3];
+                    BiasType sum13 = acc1[3] + thr1[3];
+
+                    sum00 = std::clamp<BiasType>(sum00, 0, 255);
+                    sum10 = std::clamp<BiasType>(sum10, 0, 255);
+                    sum01 = std::clamp<BiasType>(sum01, 0, 255);
+                    sum11 = std::clamp<BiasType>(sum11, 0, 255);
+                    sum02 = std::clamp<BiasType>(sum02, 0, 255);
+                    sum12 = std::clamp<BiasType>(sum12, 0, 255);
+                    sum03 = std::clamp<BiasType>(sum03, 0, 255);
+                    sum13 = std::clamp<BiasType>(sum13, 0, 255);
+
+                    out[0] = static_cast<OutputType>(unsigned(sum00 * sum10) / 512);
+                    out[1] = static_cast<OutputType>(unsigned(sum01 * sum11) / 512);
+                    out[2] = static_cast<OutputType>(unsigned(sum02 * sum12) / 512);
+                    out[3] = static_cast<OutputType>(unsigned(sum03 * sum13) / 512);
+
+                    acc0 += 4;
+                    acc1 += 4;
+                    thr0 += 4;
+                    thr1 += 4;
+                    out += 4;
+                    remaining -= 4;
                 }
 
-                sum0 = std::clamp<BiasType>(sum0, 0, 255);
-                sum1 = std::clamp<BiasType>(sum1, 0, 255);
+                while (remaining-- > 0)
+                {
+                    BiasType sum0 = *acc0++ + *thr0++;
+                    BiasType sum1 = *acc1++ + *thr1++;
 
-                output[offset + j] = static_cast<OutputType>(unsigned(sum0 * sum1) / 512);
+                    sum0 = std::clamp<BiasType>(sum0, 0, 255);
+                    sum1 = std::clamp<BiasType>(sum1, 0, 255);
+
+                    *out++ = static_cast<OutputType>(unsigned(sum0 * sum1) / 512);
+                }
+            }
+            else
+            {
+                IndexType remaining = Half;
+                while (remaining >= 4)
+                {
+                    BiasType sum00 = acc0[0];
+                    BiasType sum10 = acc1[0];
+                    BiasType sum01 = acc0[1];
+                    BiasType sum11 = acc1[1];
+                    BiasType sum02 = acc0[2];
+                    BiasType sum12 = acc1[2];
+                    BiasType sum03 = acc0[3];
+                    BiasType sum13 = acc1[3];
+
+                    sum00 = std::clamp<BiasType>(sum00, 0, 255);
+                    sum10 = std::clamp<BiasType>(sum10, 0, 255);
+                    sum01 = std::clamp<BiasType>(sum01, 0, 255);
+                    sum11 = std::clamp<BiasType>(sum11, 0, 255);
+                    sum02 = std::clamp<BiasType>(sum02, 0, 255);
+                    sum12 = std::clamp<BiasType>(sum12, 0, 255);
+                    sum03 = std::clamp<BiasType>(sum03, 0, 255);
+                    sum13 = std::clamp<BiasType>(sum13, 0, 255);
+
+                    out[0] = static_cast<OutputType>(unsigned(sum00 * sum10) / 512);
+                    out[1] = static_cast<OutputType>(unsigned(sum01 * sum11) / 512);
+                    out[2] = static_cast<OutputType>(unsigned(sum02 * sum12) / 512);
+                    out[3] = static_cast<OutputType>(unsigned(sum03 * sum13) / 512);
+
+                    acc0 += 4;
+                    acc1 += 4;
+                    out += 4;
+                    remaining -= 4;
+                }
+
+                while (remaining-- > 0)
+                {
+                    BiasType sum0 = *acc0++;
+                    BiasType sum1 = *acc1++;
+
+                    sum0 = std::clamp<BiasType>(sum0, 0, 255);
+                    sum1 = std::clamp<BiasType>(sum1, 0, 255);
+
+                    *out++ = static_cast<OutputType>(unsigned(sum0 * sum1) / 512);
+                }
             }
 
 #endif
