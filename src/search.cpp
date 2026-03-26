@@ -45,6 +45,7 @@
 #include "syzygy/tbprobe.h"
 #include "thread.h"
 #include "timeman.h"
+#include "tune.h"
 #include "tt.h"
 #include "types.h"
 #include "uci.h"
@@ -75,6 +76,180 @@ using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
 // (*Scaler) All tuned parameters at time controls shorter than
 // optimized for require verifications at longer time controls
+
+int SearchEarlyPruningOrder = 0;
+int SearchLatePruningOrder  = 0;
+
+TUNE(SetRange(0, 5), SearchEarlyPruningOrder);
+TUNE(SetRange(0, 1), SearchLatePruningOrder);
+
+constexpr std::array<std::array<int, 3>, 6> EarlyPruningOrders{{
+  {{0, 1, 2}},  // razoring, child futility, null move
+  {{0, 2, 1}},
+  {{1, 0, 2}},
+  {{1, 2, 0}},
+  {{2, 0, 1}},
+  {{2, 1, 0}},
+}};
+
+constexpr std::array<std::array<int, 2>, 2> LatePruningOrders{{
+  {{0, 1}},  // IIR, ProbCut
+  {{1, 0}},
+}};
+
+Value value_to_tt(Value v, int ply);
+
+}  // namespace
+
+namespace Search {
+
+template<NodeType nodeType>
+Value Worker::try_razoring(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, Value eval) {
+
+    if constexpr (nodeType != PV)
+        if (eval < alpha - 502 - 306 * depth * depth)
+            return qsearch<NonPV>(pos, ss, alpha, beta);
+
+    return VALUE_NONE;
+}
+
+Value Worker::try_child_futility(Stack*        ss,
+                                 Value         beta,
+                                 Depth         depth,
+                                 Value         eval,
+                                 bool          improving,
+                                 bool          opponentWorsening,
+                                 int           correctionValue,
+                                 const TTData& ttData,
+                                 bool          ttCapture) {
+
+    auto futility_margin = [&](Depth d) {
+        Value futilityMult = 76 - 21 * !ss->ttHit;
+
+        return futilityMult * d
+             - (2686 * improving + 362 * opponentWorsening) * futilityMult / 1024  //
+             + std::abs(correctionValue) / 180600;
+    };
+
+    if (!ss->ttPv && depth < 15 && eval - futility_margin(depth) >= beta && eval >= beta
+        && (!ttData.move || ttCapture) && !is_loss(beta) && !is_win(eval))
+        return (2 * beta + eval) / 3;
+
+    return VALUE_NONE;
+}
+
+template<NodeType nodeType>
+Value Worker::try_null_move(Position& pos,
+                            Stack*    ss,
+                            Value     beta,
+                            Depth     depth,
+                            bool      cutNode,
+                            bool      improving,
+                            Move      excludedMove,
+                            Color     us,
+                            StateInfo& st) {
+
+    if (cutNode && ss->staticEval >= beta - 16 * depth - 53 * improving + 378 && !excludedMove
+        && pos.non_pawn_material(us) && ss->ply >= nmpMinPly && !is_loss(beta))
+    {
+        assert((ss - 1)->currentMove != Move::null());
+
+        Depth R = 7 + depth / 3;
+        do_null_move(pos, st, ss);
+
+        Value nullValue = -search<NonPV>(pos, ss + 1, -beta, -beta + 1, depth - R, false);
+
+        undo_null_move(pos);
+
+        if (nullValue >= beta && !is_win(nullValue))
+        {
+            if (nmpMinPly || depth < 16)
+                return nullValue;
+
+            assert(!nmpMinPly);
+
+            nmpMinPly = ss->ply + 3 * (depth - R) / 4;
+
+            Value v = search<NonPV>(pos, ss, beta - 1, beta, depth - R, false);
+
+            nmpMinPly = 0;
+
+            if (v >= beta)
+                return nullValue;
+        }
+    }
+
+    return VALUE_NONE;
+}
+
+void Worker::try_iir(Stack* ss, Depth& depth, bool allNode, const TTData& ttData, int priorReduction) {
+
+    if (!ss->followPV && !allNode && depth >= 6 && !ttData.move && priorReduction <= 3)
+        depth--;
+}
+
+template<NodeType nodeType>
+Value Worker::try_probcut(Position&      pos,
+                          Stack*         ss,
+                          Value          beta,
+                          Depth          depth,
+                          bool           cutNode,
+                          bool           improving,
+                          Move           excludedMove,
+                          StateInfo&     st,
+                          const TTData&  ttData,
+                          TTWriter&      ttWriter,
+                          Key            posKey,
+                          Value          unadjustedStaticEval) {
+
+    Value probCutBeta = beta + 224 - 61 * improving;
+
+    if (depth >= 3
+        && !is_decisive(beta)
+        && !(is_valid(ttData.value) && ttData.value < probCutBeta))
+    {
+        assert(probCutBeta < VALUE_INFINITE && probCutBeta > beta);
+
+        MovePicker mp(pos, ttData.move, probCutBeta - ss->staticEval, &captureHistory);
+        Depth      probCutDepth = depth - 4;
+        Move       move;
+
+        while ((move = mp.next_move()) != Move::none())
+        {
+            assert(move.is_ok());
+
+            if (move == excludedMove || !pos.legal(move))
+                continue;
+
+            assert(pos.capture_stage(move));
+
+            do_move(pos, move, st, ss);
+
+            Value value = -qsearch<NonPV>(pos, ss + 1, -probCutBeta, -probCutBeta + 1);
+
+            if (value >= probCutBeta && probCutDepth > 0)
+                value = -search<NonPV>(pos, ss + 1, -probCutBeta, -probCutBeta + 1, probCutDepth,
+                                       !cutNode);
+
+            undo_move(pos, move);
+
+            if (value >= probCutBeta)
+            {
+                ttWriter.write(posKey, value_to_tt(value, ss->ply), ss->ttPv, BOUND_LOWER,
+                               probCutDepth + 1, move, unadjustedStaticEval, tt.generation());
+
+                if (!is_decisive(value))
+                    return value - (probCutBeta - beta);
+            }
+        }
+    }
+
+    return VALUE_NONE;
+}
+
+}  // namespace Search
+
+namespace {
 
 int correction_value(const Worker& w, const Position& pos, const Stack* const ss) {
     const Color us     = pos.side_to_move();
@@ -873,10 +1048,10 @@ Value Search::Worker::search(
         }
     }
 
+    // Use static evaluation difference to improve quiet move ordering
     if (ss->inCheck)
         goto moves_loop;
 
-    // Use static evaluation difference to improve quiet move ordering
     if (((ss - 1)->currentMove).is_ok() && !(ss - 1)->inCheck && !priorCapture)
     {
         int evalDiff = std::clamp(-int((ss - 1)->staticEval + ss->staticEval), -214, 171) + 60;
@@ -886,117 +1061,62 @@ Value Search::Worker::search(
             sharedHistory.pawn_entry(pos)[pos.piece_on(prevSq)][prevSq] << evalDiff * 12;
     }
 
-
-    // Step 7. Razoring
-    // If eval is really low, skip search entirely and return the qsearch value.
-    // For PvNodes, we must have a guard against mates being returned.
-    if (!PvNode && eval < alpha - 502 - 306 * depth * depth)
-        return qsearch<NonPV>(pos, ss, alpha, beta);
-
-    // Step 8. Futility pruning: child node
-    // The depth condition is important for mate finding.
     {
-        auto futility_margin = [&](Depth d) {
-            Value futilityMult = 76 - 21 * !ss->ttHit;
+        const auto& earlyPruningOrder = EarlyPruningOrders[SearchEarlyPruningOrder];
 
-            return futilityMult * d
-                 - (2686 * improving + 362 * opponentWorsening) * futilityMult / 1024  //
-                 + std::abs(correctionValue) / 180600;
-        };
-
-        if (!ss->ttPv && depth < 15 && eval - futility_margin(depth) >= beta && eval >= beta
-            && (!ttData.move || ttCapture) && !is_loss(beta) && !is_win(eval))
-            return (2 * beta + eval) / 3;
-    }
-
-    // Step 9. Null move search with verification search
-    if (cutNode && ss->staticEval >= beta - 16 * depth - 53 * improving + 378 && !excludedMove
-        && pos.non_pawn_material(us) && ss->ply >= nmpMinPly && !is_loss(beta))
-    {
-        assert((ss - 1)->currentMove != Move::null());
-
-        // Null move dynamic reduction based on depth
-        Depth R = 7 + depth / 3;
-        do_null_move(pos, st, ss);
-
-        Value nullValue = -search<NonPV>(pos, ss + 1, -beta, -beta + 1, depth - R, false);
-
-        undo_null_move(pos);
-
-        // Do not return unproven mate or TB scores
-        if (nullValue >= beta && !is_win(nullValue))
+        for (int action : earlyPruningOrder)
         {
-            if (nmpMinPly || depth < 16)
-                return nullValue;
+            Value result = VALUE_NONE;
 
-            assert(!nmpMinPly);  // Recursive verification is not allowed
+            switch (action)
+            {
+            case 0:
+                result = try_razoring<nodeType>(pos, ss, alpha, beta, depth, eval);
+                break;
+            case 1:
+                result = try_child_futility(ss, beta, depth, eval, improving, opponentWorsening,
+                                            correctionValue, ttData, ttCapture);
+                break;
+            case 2:
+                result = try_null_move<nodeType>(pos, ss, beta, depth, cutNode, improving,
+                                                 excludedMove, us, st);
+                break;
+            default:
+                assert(false);
+                break;
+            }
 
-            // Do verification search at high depths, with null move pruning disabled
-            // until ply exceeds nmpMinPly.
-            nmpMinPly = ss->ply + 3 * (depth - R) / 4;
-
-            Value v = search<NonPV>(pos, ss, beta - 1, beta, depth - R, false);
-
-            nmpMinPly = 0;
-
-            if (v >= beta)
-                return nullValue;
+            if (result != VALUE_NONE)
+                return result;
         }
     }
 
     improving |= ss->staticEval >= beta;
 
-    // Step 10. Internal iterative reductions
-    // At sufficient depth, reduce depth for PV/Cut nodes without a TTMove.
-    // (*Scaler) Making IIR more aggressive scales poorly.
-    if (!ss->followPV && !allNode && depth >= 6 && !ttData.move && priorReduction <= 3)
-        depth--;
-
-    // Step 11. ProbCut
-    // If we have a good enough capture (or queen promotion) and a reduced search
-    // returns a value much above beta, we can (almost) safely prune the previous move.
-    probCutBeta = beta + 224 - 61 * improving;
-    if (depth >= 3
-        && !is_decisive(beta)
-        // If value from transposition table is lower than probCutBeta, don't attempt
-        // probCut there
-        && !(is_valid(ttData.value) && ttData.value < probCutBeta))
     {
-        assert(probCutBeta < VALUE_INFINITE && probCutBeta > beta);
+        const auto& latePruningOrder = LatePruningOrders[SearchLatePruningOrder];
 
-        MovePicker mp(pos, ttData.move, probCutBeta - ss->staticEval, &captureHistory);
-        Depth      probCutDepth = depth - 4;
-
-        while ((move = mp.next_move()) != Move::none())
+        for (int action : latePruningOrder)
         {
-            assert(move.is_ok());
+            Value result = VALUE_NONE;
 
-            if (move == excludedMove || !pos.legal(move))
-                continue;
-
-            assert(pos.capture_stage(move));
-
-            do_move(pos, move, st, ss);
-
-            // Perform a preliminary qsearch to verify that the move holds
-            value = -qsearch<NonPV>(pos, ss + 1, -probCutBeta, -probCutBeta + 1);
-
-            // If the qsearch held, perform the regular search
-            if (value >= probCutBeta && probCutDepth > 0)
-                value = -search<NonPV>(pos, ss + 1, -probCutBeta, -probCutBeta + 1, probCutDepth,
-                                       !cutNode);
-
-            undo_move(pos, move);
-
-            if (value >= probCutBeta)
+            switch (action)
             {
-                // Save ProbCut data into transposition table
-                ttWriter.write(posKey, value_to_tt(value, ss->ply), ss->ttPv, BOUND_LOWER,
-                               probCutDepth + 1, move, unadjustedStaticEval, tt.generation());
-
-                if (!is_decisive(value))
-                    return value - (probCutBeta - beta);
+            case 0:
+                try_iir(ss, depth, allNode, ttData, priorReduction);
+                break;
+            case 1:
+                result = try_probcut<nodeType>(pos, ss, beta, depth, cutNode, improving,
+                                               excludedMove, st, ttData, ttWriter, posKey,
+                                               unadjustedStaticEval);
+                break;
+            default:
+                assert(false);
+                break;
             }
+
+            if (result != VALUE_NONE)
+                return result;
         }
     }
 

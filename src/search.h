@@ -55,6 +55,8 @@ enum NodeType {
 class TranspositionTable;
 class ThreadPool;
 class OptionsMap;
+struct TTData;
+struct TTWriter;
 
 namespace Search {
 
@@ -315,6 +317,46 @@ class Worker {
     // Quiescence search function, which is called by the main search
     template<NodeType nodeType>
     Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta);
+
+    template<NodeType nodeType>
+    Value try_razoring(Position& pos, Stack* ss, Value alpha, Value beta, Depth depth, Value eval);
+
+    Value try_child_futility(Stack*        ss,
+                             Value         beta,
+                             Depth         depth,
+                             Value         eval,
+                             bool          improving,
+                             bool          opponentWorsening,
+                             int           correctionValue,
+                             const TTData& ttData,
+                             bool          ttCapture);
+
+    template<NodeType nodeType>
+    Value try_null_move(Position& pos,
+                        Stack*    ss,
+                        Value     beta,
+                        Depth     depth,
+                        bool      cutNode,
+                        bool      improving,
+                        Move      excludedMove,
+                        Color     us,
+                        StateInfo& st);
+
+    void try_iir(Stack* ss, Depth& depth, bool allNode, const TTData& ttData, int priorReduction);
+
+    template<NodeType nodeType>
+    Value try_probcut(Position&      pos,
+                      Stack*         ss,
+                      Value          beta,
+                      Depth          depth,
+                      bool           cutNode,
+                      bool           improving,
+                      Move           excludedMove,
+                      StateInfo&     st,
+                      const TTData&  ttData,
+                      TTWriter&      ttWriter,
+                      Key            posKey,
+                      Value          unadjustedStaticEval);
 
     Depth reduction(bool i, Depth d, int mn, int delta) const;
 
