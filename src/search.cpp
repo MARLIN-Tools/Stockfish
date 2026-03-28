@@ -77,8 +77,8 @@ using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 // (*Scaler) All tuned parameters at time controls shorter than
 // optimized for require verifications at longer time controls
 
-int AntiDancingAnalysisEvalThreshold = 300;
-TUNE(SetRange(0, 600), AntiDancingAnalysisEvalThreshold);
+int RepetitionRecognitionAndProhibitionInWinningPositionEvalThreshold = 300;
+TUNE(SetRange(0, 600), RepetitionRecognitionAndProhibitionInWinningPositionEvalThreshold);
 
 int correction_value(const Worker& w, const Position& pos, const Stack* const ss) {
     const Color us     = pos.side_to_move();
@@ -767,7 +767,8 @@ Value Search::Worker::search(
                        unadjustedStaticEval, tt.generation());
     }
 
-    if (upcomingRepetition && eval >= AntiDancingAnalysisEvalThreshold)
+    if (upcomingRepetition
+        && eval >= RepetitionRecognitionAndProhibitionInWinningPositionEvalThreshold)
         return value_draw(nodes);
 
     // Set up the improving flag, which is true if current static evaluation is
@@ -1617,7 +1618,8 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
               to_corrected_static_eval(unadjustedStaticEval, correctionValue);
         }
 
-        if (upcomingRepetition && bestValue >= AntiDancingAnalysisEvalThreshold)
+        if (upcomingRepetition
+            && bestValue >= RepetitionRecognitionAndProhibitionInWinningPositionEvalThreshold)
             return value_draw(nodes);
 
         // Stand pat. Return immediately if static value is at least beta
