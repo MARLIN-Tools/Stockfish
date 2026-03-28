@@ -45,6 +45,7 @@
 #include "syzygy/tbprobe.h"
 #include "thread.h"
 #include "timeman.h"
+#include "tune.h"
 #include "tt.h"
 #include "types.h"
 #include "uci.h"
@@ -75,6 +76,9 @@ using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
 // (*Scaler) All tuned parameters at time controls shorter than
 // optimized for require verifications at longer time controls
+
+int AntiDancingAnalysisEvalThreshold = 300;
+TUNE(SetRange(0, 600), AntiDancingAnalysisEvalThreshold);
 
 int correction_value(const Worker& w, const Position& pos, const Stack* const ss) {
     const Color us     = pos.side_to_move();
@@ -643,7 +647,9 @@ Value Search::Worker::search(
     depth = std::min(depth, MAX_PLY - 1);
 
     // Check if we have an upcoming move that draws by repetition
-    if (!rootNode && alpha < VALUE_DRAW && pos.upcoming_repetition(ss->ply))
+    const bool upcomingRepetition = !rootNode && pos.upcoming_repetition(ss->ply);
+
+    if (upcomingRepetition && alpha < VALUE_DRAW)
     {
         alpha = value_draw(nodes);
         if (alpha >= beta)
@@ -760,6 +766,9 @@ Value Search::Worker::search(
         ttWriter.write(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_UNSEARCHED, Move::none(),
                        unadjustedStaticEval, tt.generation());
     }
+
+    if (upcomingRepetition && eval >= AntiDancingAnalysisEvalThreshold)
+        return value_draw(nodes);
 
     // Set up the improving flag, which is true if current static evaluation is
     // bigger than the previous static evaluation at our turn (if we were in
@@ -1523,7 +1532,9 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     assert(PvNode || (alpha == beta - 1));
 
     // Check if we have an upcoming move that draws by repetition
-    if (alpha < VALUE_DRAW && pos.upcoming_repetition(ss->ply))
+    const bool upcomingRepetition = pos.upcoming_repetition(ss->ply);
+
+    if (upcomingRepetition && alpha < VALUE_DRAW)
     {
         alpha = value_draw(nodes);
         if (alpha >= beta)
@@ -1605,6 +1616,9 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
             ss->staticEval       = bestValue =
               to_corrected_static_eval(unadjustedStaticEval, correctionValue);
         }
+
+        if (upcomingRepetition && bestValue >= AntiDancingAnalysisEvalThreshold)
+            return value_draw(nodes);
 
         // Stand pat. Return immediately if static value is at least beta
         if (bestValue >= beta)
