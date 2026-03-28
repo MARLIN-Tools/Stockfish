@@ -64,6 +64,18 @@ using namespace Search;
 
 namespace {
 
+constexpr int FutilityDepthLinear    = 141;
+constexpr int FutilityDepthQuadratic = 4;
+constexpr int FutilityBaseMult       = 60;
+constexpr int FutilityNoTTHitPenalty = 26;
+
+Depth adjusted_futility_depth(Depth d) {
+    int64_t linear = int64_t(d) * FutilityDepthLinear / 100;
+    int64_t quad   = int64_t(d) * d * FutilityDepthQuadratic / 10000;
+
+    return Depth(std::clamp<int64_t>(linear + quad, 0, MAX_PLY));
+}
+
 constexpr int SEARCHEDLIST_CAPACITY = 32;
 using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
@@ -897,9 +909,9 @@ Value Search::Worker::search(
     // The depth condition is important for mate finding.
     {
         auto futility_margin = [&](Depth d) {
-            Value futilityMult = 76 - 21 * !ss->ttHit;
+            Value futilityMult = FutilityBaseMult - FutilityNoTTHitPenalty * !ss->ttHit;
 
-            return futilityMult * d
+            return futilityMult * adjusted_futility_depth(d)
                  - (2686 * improving + 362 * opponentWorsening) * futilityMult / 1024  //
                  + std::abs(correctionValue) / 180600;
         };
