@@ -59,6 +59,8 @@ class Network {
 
    public:
     Network(EvalFile file, EmbeddedNNUEType type) :
+        featureTransformer(),
+        network{},
         evalFile(file),
         embeddedType(type) {}
 
