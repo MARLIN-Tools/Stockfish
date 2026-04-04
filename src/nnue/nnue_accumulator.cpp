@@ -87,6 +87,34 @@ const AccumulatorState<T>& AccumulatorStack::latest() const noexcept {
 template const AccumulatorState<PSQFeatureSet>&    AccumulatorStack::latest() const noexcept;
 template const AccumulatorState<ThreatFeatureSet>& AccumulatorStack::latest() const noexcept;
 
+const RecklessRawAccumulator& AccumulatorStack::latest_reckless_raw() const noexcept {
+    return reckless_raw_accumulators[size - 1];
+}
+
+RecklessRawAccumulator& AccumulatorStack::mut_latest_reckless_raw() noexcept {
+    return reckless_raw_accumulators[size - 1];
+}
+
+const RecklessRawAccumulator& AccumulatorStack::reckless_raw_at(std::size_t idx) const noexcept {
+    return reckless_raw_accumulators[idx];
+}
+
+RecklessRawAccumulator& AccumulatorStack::mut_reckless_raw_at(std::size_t idx) noexcept {
+    return reckless_raw_accumulators[idx];
+}
+
+const DirtyPiece& AccumulatorStack::psq_diff_at(std::size_t idx) const noexcept {
+    return psq_accumulators[idx].diff;
+}
+
+const DirtyThreats& AccumulatorStack::threat_diff_at(std::size_t idx) const noexcept {
+    return threat_accumulators[idx].diff;
+}
+
+std::size_t AccumulatorStack::current_size() const noexcept {
+    return size;
+}
+
 template<typename T>
 AccumulatorState<T>& AccumulatorStack::mut_latest() noexcept {
     return mut_accumulators<T>()[size - 1];
@@ -121,6 +149,7 @@ AccumulatorStack::mut_accumulators() noexcept {
 void AccumulatorStack::reset() noexcept {
     psq_accumulators[0].reset({});
     threat_accumulators[0].reset({});
+    reckless_raw_accumulators[0].reset();
     size = 1;
 }
 
@@ -128,6 +157,7 @@ std::pair<DirtyPiece&, DirtyThreats&> AccumulatorStack::push() noexcept {
     assert(size < MaxSize);
     auto& dp  = psq_accumulators[size].reset();
     auto& dts = threat_accumulators[size].reset();
+    reckless_raw_accumulators[size].reset();
     new (&dts) DirtyThreats;
     size++;
     return {dp, dts};

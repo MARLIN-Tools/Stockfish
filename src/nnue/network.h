@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -72,6 +73,7 @@ class Network {
     bool save(const std::optional<std::string>& filename) const;
 
     std::size_t get_content_hash() const;
+    const auto& get_biases() const { return featureTransformer.biases; }
 
     NetworkOutput evaluate(const Position&                         pos,
                            AccumulatorStack&                       accumulatorStack,
@@ -116,6 +118,103 @@ class Network {
     friend struct AccumulatorCaches::Cache;
 };
 
+class RecklessRawBigNetwork {
+    static constexpr IndexType FTDimensions = TransformedFeatureDimensionsBig;
+
+    template<typename T>
+    struct alignas(64) Aligned {
+        T data;
+    };
+
+    struct Parameters {
+        Aligned<std::array<std::array<std::int8_t, FTDimensions>, ThreatFeatureSet::Dimensions>>
+          ft_threat_weights;
+        Aligned<std::array<std::array<BiasType, FTDimensions>, PSQFeatureSet::Dimensions>>
+          ft_piece_weights;
+        Aligned<std::array<BiasType, FTDimensions>> ft_biases;
+        Aligned<std::array<std::array<std::int8_t, 16 * FTDimensions>, LayerStacks>> l1_weights;
+        Aligned<std::array<std::array<float, 16>, LayerStacks>>                      l1_biases;
+        Aligned<std::array<std::array<std::array<float, L3Big>, 16>, LayerStacks>>   l2_weights;
+        Aligned<std::array<std::array<float, L3Big>, LayerStacks>>                    l2_biases;
+        Aligned<std::array<std::array<float, L3Big>, LayerStacks>>                    l3_weights;
+        Aligned<std::array<float, LayerStacks>>                                       l3_biases;
+    };
+
+   public:
+    RecklessRawBigNetwork(EvalFile file, EmbeddedNNUEType type) :
+        evalFile(file),
+        embeddedType(type) {}
+
+    void load(const std::string& rootDirectory, std::string evalfilePath);
+    bool save(const std::optional<std::string>& filename) const;
+
+    std::size_t get_content_hash() const;
+    const auto& get_biases() const { return parameters.ft_biases.data; }
+
+    NetworkOutput evaluate(const Position&                         pos,
+                           AccumulatorStack&                       accumulatorStack,
+                           AccumulatorCaches::Cache<FTDimensions>& cache) const;
+    void          verify(std::string evalfilePath,
+                         const std::function<void(std::string_view)>&) const;
+    NnueEvalTrace trace_evaluate(const Position&                         pos,
+                                 AccumulatorStack&                       accumulatorStack,
+                                 AccumulatorCaches::Cache<FTDimensions>& cache) const;
+
+   private:
+    static constexpr float DequantMultiplier = float(1 << 9) / float(255 * 255 * 64);
+    static constexpr int   NetworkScale      = 380;
+    static constexpr std::array<std::size_t, 33> OutputBucketsLayout = {
+      0, 0, 0, 0, 0, 0, 0, 0, 0,
+      1, 1, 1, 1,
+      2, 2, 2, 2,
+      3, 3, 3,
+      4, 4, 4,
+      5, 5, 5,
+      6, 6, 6,
+      7, 7, 7, 7,
+    };
+
+    using FtArray = std::array<std::uint8_t, FTDimensions>;
+    using AccArray = std::array<std::array<BiasType, FTDimensions>, COLOR_NB>;
+    using NnzArray = std::array<std::uint16_t, FTDimensions / 4>;
+
+    bool load_reckless_file(const std::string& path);
+    bool try_download_default(const std::string& rootDirectory, const std::string& filename);
+
+    void refresh_pst(const Position& pos, Color pov, std::array<BiasType, FTDimensions>& out) const;
+    void refresh_threats(const Position& pos, Color pov, std::array<BiasType, FTDimensions>& out) const;
+    void update_pst_incremental(Color                          pov,
+                                Square                         ksq,
+                                const DirtyPiece&              diff,
+                                const std::array<BiasType, FTDimensions>& from,
+                                std::array<BiasType, FTDimensions>&       to) const;
+    void update_threat_incremental(Color                          pov,
+                                   Square                         ksq,
+                                   const DirtyThreats&            diff,
+                                   const std::array<BiasType, FTDimensions>& from,
+                                   std::array<BiasType, FTDimensions>&       to) const;
+    void ensure_pst(Color pov, const Position& pos, AccumulatorStack& accumulatorStack) const;
+    void ensure_threats(Color pov, const Position& pos, AccumulatorStack& accumulatorStack) const;
+    void transform(const Position& pos,
+                   const RecklessRawAccumulator& accumulators,
+                   FtArray&                      ftOut) const;
+    std::size_t find_nnz(const FtArray& ftOut, NnzArray& nnz) const;
+    void propagate_l1(const FtArray& ftOut,
+                      const NnzArray& nnz,
+                      std::size_t     nnzCount,
+                      std::size_t     bucket,
+                      std::array<float, 16>& l1) const;
+    Value evaluate_bucket(const FtArray& ftOut,
+                          const NnzArray& nnz,
+                          std::size_t     nnzCount,
+                          std::size_t     bucket) const;
+
+    Parameters       parameters{};
+    EvalFile         evalFile;
+    EmbeddedNNUEType embeddedType;
+    bool             initialized = false;
+};
+
 // Definitions of the network types
 using SmallFeatureTransformer = FeatureTransformer<TransformedFeatureDimensionsSmall>;
 using SmallNetworkArchitecture =
@@ -124,7 +223,7 @@ using SmallNetworkArchitecture =
 using BigFeatureTransformer  = FeatureTransformer<TransformedFeatureDimensionsBig>;
 using BigNetworkArchitecture = NetworkArchitecture<TransformedFeatureDimensionsBig, L2Big, L3Big>;
 
-using NetworkBig   = Network<BigNetworkArchitecture, BigFeatureTransformer>;
+using NetworkBig   = RecklessRawBigNetwork;
 using NetworkSmall = Network<SmallNetworkArchitecture, SmallFeatureTransformer>;
 
 
@@ -144,6 +243,14 @@ template<typename ArchT, typename FeatureTransformerT>
 struct std::hash<Stockfish::Eval::NNUE::Network<ArchT, FeatureTransformerT>> {
     std::size_t operator()(
       const Stockfish::Eval::NNUE::Network<ArchT, FeatureTransformerT>& network) const noexcept {
+        return network.get_content_hash();
+    }
+};
+
+template<>
+struct std::hash<Stockfish::Eval::NNUE::RecklessRawBigNetwork> {
+    std::size_t
+    operator()(const Stockfish::Eval::NNUE::RecklessRawBigNetwork& network) const noexcept {
         return network.get_content_hash();
     }
 };

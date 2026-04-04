@@ -87,7 +87,7 @@ struct AccumulatorCaches {
         void clear(const Network& network) {
             for (auto& entries1D : entries)
                 for (auto& entry : entries1D)
-                    entry.clear(network.featureTransformer.biases);
+                    entry.clear(network.get_biases());
         }
 
         std::array<Entry, COLOR_NB>& operator[](Square sq) { return entries[sq]; }
@@ -103,6 +103,18 @@ struct AccumulatorCaches {
 
     Cache<TransformedFeatureDimensionsBig>   big;
     Cache<TransformedFeatureDimensionsSmall> small;
+};
+
+struct alignas(CacheLineSize) RecklessRawAccumulator {
+    std::array<std::array<std::int16_t, TransformedFeatureDimensionsBig>, COLOR_NB> pst;
+    std::array<std::array<std::int16_t, TransformedFeatureDimensionsBig>, COLOR_NB> threat;
+    std::array<bool, COLOR_NB>                                                       pstComputed    = {};
+    std::array<bool, COLOR_NB>                                                       threatComputed = {};
+
+    void reset() noexcept {
+        pstComputed.fill(false);
+        threatComputed.fill(false);
+    }
 };
 
 
@@ -156,6 +168,14 @@ class AccumulatorStack {
     template<typename T>
     [[nodiscard]] const AccumulatorState<T>& latest() const noexcept;
 
+    [[nodiscard]] const RecklessRawAccumulator& latest_reckless_raw() const noexcept;
+    [[nodiscard]] RecklessRawAccumulator&       mut_latest_reckless_raw() noexcept;
+    [[nodiscard]] const RecklessRawAccumulator& reckless_raw_at(std::size_t idx) const noexcept;
+    [[nodiscard]] RecklessRawAccumulator&       mut_reckless_raw_at(std::size_t idx) noexcept;
+    [[nodiscard]] const DirtyPiece&             psq_diff_at(std::size_t idx) const noexcept;
+    [[nodiscard]] const DirtyThreats&           threat_diff_at(std::size_t idx) const noexcept;
+    [[nodiscard]] std::size_t                   current_size() const noexcept;
+
     void                                  reset() noexcept;
     std::pair<DirtyPiece&, DirtyThreats&> push() noexcept;
     void                                  pop() noexcept;
@@ -198,6 +218,7 @@ class AccumulatorStack {
 
     std::array<AccumulatorState<PSQFeatureSet>, MaxSize>    psq_accumulators;
     std::array<AccumulatorState<ThreatFeatureSet>, MaxSize> threat_accumulators;
+    std::array<RecklessRawAccumulator, MaxSize>             reckless_raw_accumulators;
     std::size_t                                             size = 1;
 };
 
