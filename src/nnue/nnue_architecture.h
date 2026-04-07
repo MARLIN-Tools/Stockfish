@@ -24,9 +24,11 @@
 #include <cstdint>
 #include <cstring>
 #include <iosfwd>
+#include <type_traits>
 
 #include "features/half_ka_v2_hm.h"
 #include "features/full_threats.h"
+#include "features/full_threats_small.h"
 #include "layers/affine_transform.h"
 #include "layers/affine_transform_sparse_input.h"
 #include "layers/clipped_relu.h"
@@ -36,8 +38,10 @@
 namespace Stockfish::Eval::NNUE {
 
 // Input features used in evaluation function
-using ThreatFeatureSet = Features::FullThreats;
-using PSQFeatureSet    = Features::HalfKAv2_hm;
+using ThreatFeatureSetBig   = Features::FullThreats;
+using ThreatFeatureSetSmall = Features::FullThreatsSmall;
+using ThreatFeatureSet      = ThreatFeatureSetBig;
+using PSQFeatureSet         = Features::HalfKAv2_hm;
 
 // Number of input feature dimensions after conversion
 constexpr IndexType TransformedFeatureDimensionsBig = 1024;
@@ -47,6 +51,20 @@ constexpr int       L3Big                           = 32;
 constexpr IndexType TransformedFeatureDimensionsSmall = 128;
 constexpr int       L2Small                           = 15;
 constexpr int       L3Small                           = 32;
+
+template<IndexType Dimensions>
+inline constexpr bool UsesThreats =
+  Dimensions == TransformedFeatureDimensionsBig || Dimensions == TransformedFeatureDimensionsSmall;
+
+template<IndexType Dimensions>
+using ThreatFeatureSetFor =
+  std::conditional_t<Dimensions == TransformedFeatureDimensionsSmall,
+                     ThreatFeatureSetSmall,
+                     ThreatFeatureSetBig>;
+
+template<typename FeatureSet>
+inline constexpr bool IsThreatFeatureSet =
+  std::is_same_v<FeatureSet, ThreatFeatureSetBig> || std::is_same_v<FeatureSet, ThreatFeatureSetSmall>;
 
 constexpr IndexType PSQTBuckets = 8;
 constexpr IndexType LayerStacks = 8;

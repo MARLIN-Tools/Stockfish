@@ -106,11 +106,11 @@ struct AccumulatorCaches {
 };
 
 
-template<typename FeatureSet>
+template<typename DiffType>
 struct AccumulatorState {
     Accumulator<TransformedFeatureDimensionsBig>   accumulatorBig;
     Accumulator<TransformedFeatureDimensionsSmall> accumulatorSmall;
-    typename FeatureSet::DiffType                  diff;
+    DiffType                                       diff;
 
     template<IndexType Size>
     auto& acc() noexcept {
@@ -136,25 +136,34 @@ struct AccumulatorState {
             return accumulatorSmall;
     }
 
-    void reset(const typename FeatureSet::DiffType& dp) noexcept {
+    void reset(const DiffType& dp) noexcept {
         diff = dp;
         accumulatorBig.computed.fill(false);
         accumulatorSmall.computed.fill(false);
     }
 
-    typename FeatureSet::DiffType& reset() noexcept {
+    DiffType& reset() noexcept {
         accumulatorBig.computed.fill(false);
         accumulatorSmall.computed.fill(false);
         return diff;
     }
 };
 
+using PSQAccumulatorState    = AccumulatorState<DirtyPiece>;
+using ThreatAccumulatorState = AccumulatorState<DirtyThreats>;
+
+template<typename FeatureSet>
+using AccumulatorStateFor =
+  std::conditional_t<std::is_same_v<FeatureSet, PSQFeatureSet>,
+                     PSQAccumulatorState,
+                     ThreatAccumulatorState>;
+
 class AccumulatorStack {
    public:
     static constexpr std::size_t MaxSize = MAX_PLY + 1;
 
     template<typename T>
-    [[nodiscard]] const AccumulatorState<T>& latest() const noexcept;
+    [[nodiscard]] const AccumulatorStateFor<T>& latest() const noexcept;
 
     void                                  reset() noexcept;
     std::pair<DirtyPiece&, DirtyThreats&> push() noexcept;
@@ -167,13 +176,13 @@ class AccumulatorStack {
 
    private:
     template<typename T>
-    [[nodiscard]] AccumulatorState<T>& mut_latest() noexcept;
+    [[nodiscard]] AccumulatorStateFor<T>& mut_latest() noexcept;
 
     template<typename T>
-    [[nodiscard]] const std::array<AccumulatorState<T>, MaxSize>& accumulators() const noexcept;
+    [[nodiscard]] const std::array<AccumulatorStateFor<T>, MaxSize>& accumulators() const noexcept;
 
     template<typename T>
-    [[nodiscard]] std::array<AccumulatorState<T>, MaxSize>& mut_accumulators() noexcept;
+    [[nodiscard]] std::array<AccumulatorStateFor<T>, MaxSize>& mut_accumulators() noexcept;
 
     template<typename FeatureSet, IndexType Dimensions>
     void evaluate_side(Color                                 perspective,
@@ -196,9 +205,9 @@ class AccumulatorStack {
                                      const FeatureTransformer<Dimensions>& featureTransformer,
                                      const std::size_t                     end) noexcept;
 
-    std::array<AccumulatorState<PSQFeatureSet>, MaxSize>    psq_accumulators;
-    std::array<AccumulatorState<ThreatFeatureSet>, MaxSize> threat_accumulators;
-    std::size_t                                             size = 1;
+    std::array<PSQAccumulatorState, MaxSize>    psq_accumulators;
+    std::array<ThreatAccumulatorState, MaxSize> threat_accumulators;
+    std::size_t                                 size = 1;
 };
 
 }  // namespace Stockfish::Eval::NNUE

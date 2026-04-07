@@ -80,8 +80,8 @@ void permute(std::array<T, N>& data, const std::array<std::size_t, OrderSize>& o
 // Input feature converter
 template<IndexType TransformedFeatureDimensions>
 class FeatureTransformer {
-    static constexpr bool UseThreats =
-      (TransformedFeatureDimensions == TransformedFeatureDimensionsBig);
+    using LocalThreatFeatureSet       = ThreatFeatureSetFor<TransformedFeatureDimensions>;
+    static constexpr bool UseThreats  = UsesThreats<TransformedFeatureDimensions>;
     // Number of output dimensions for one side
     static constexpr IndexType HalfDimensions = TransformedFeatureDimensions;
 
@@ -91,7 +91,7 @@ class FeatureTransformer {
 
     // Number of input/output dimensions
     static constexpr IndexType InputDimensions       = PSQFeatureSet::Dimensions;
-    static constexpr IndexType ThreatInputDimensions = ThreatFeatureSet::Dimensions;
+    static constexpr IndexType ThreatInputDimensions = LocalThreatFeatureSet::Dimensions;
     static constexpr IndexType TotalInputDimensions =
       InputDimensions + (UseThreats ? ThreatInputDimensions : 0);
     static constexpr IndexType OutputDimensions = HalfDimensions;
@@ -132,10 +132,19 @@ class FeatureTransformer {
         return hash;
     }
 
+    static constexpr std::uint32_t threat_hash_value() {
+        return LocalThreatFeatureSet::HashValue;
+    }
+
     // Hash value embedded in the evaluation file
     static constexpr std::uint32_t get_hash_value() {
-        return (UseThreats ? combine_hash({ThreatFeatureSet::HashValue, PSQFeatureSet::HashValue})
-                           : PSQFeatureSet::HashValue)
+        if constexpr (!UseThreats)
+            return PSQFeatureSet::HashValue ^ (OutputDimensions * 2);
+
+        if constexpr (std::is_same_v<LocalThreatFeatureSet, ThreatFeatureSetSmall>)
+            return threat_hash_value() ^ (OutputDimensions * 2);
+
+        return combine_hash({threat_hash_value(), PSQFeatureSet::HashValue})
              ^ (OutputDimensions * 2);
     }
 
@@ -242,7 +251,7 @@ class FeatureTransformer {
         using namespace SIMD;
         accumulatorStack.evaluate(pos, *this, cache);
         const auto& accumulatorState       = accumulatorStack.latest<PSQFeatureSet>();
-        const auto& threatAccumulatorState = accumulatorStack.latest<ThreatFeatureSet>();
+        const auto& threatAccumulatorState = accumulatorStack.latest<LocalThreatFeatureSet>();
 
         const Color perspectives[2]  = {pos.side_to_move(), ~pos.side_to_move()};
         const auto& psqtAccumulation = (accumulatorState.acc<HalfDimensions>()).psqtAccumulation;
@@ -252,7 +261,7 @@ class FeatureTransformer {
         if constexpr (UseThreats)
         {
             const auto& threatPsqtAccumulation =
-              (threatAccumulatorState.acc<HalfDimensions>()).psqtAccumulation;
+              (threatAccumulatorState.template acc<HalfDimensions>()).psqtAccumulation;
             psqt = (psqt + threatPsqtAccumulation[perspectives[0]][bucket]
                     - threatPsqtAccumulation[perspectives[1]][bucket])
                  / 2;
@@ -262,7 +271,7 @@ class FeatureTransformer {
 
         const auto& accumulation = (accumulatorState.acc<HalfDimensions>()).accumulation;
         const auto& threatAccumulation =
-          (threatAccumulatorState.acc<HalfDimensions>()).accumulation;
+          (threatAccumulatorState.template acc<HalfDimensions>()).accumulation;
 
         for (IndexType p = 0; p < 2; ++p)
         {
