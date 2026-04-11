@@ -21,6 +21,7 @@
 
 #include <string>
 
+#include "policy_head.h"
 #include "types.h"
 
 namespace Stockfish {
@@ -51,6 +52,12 @@ Value evaluate(const NNUE::Networks&          networks,
                Eval::NNUE::AccumulatorStack&  accumulators,
                Eval::NNUE::AccumulatorCaches& caches,
                int                            optimism);
+Policy::StaticEvalInfo evaluate_with_policy(const NNUE::Networks&          networks,
+                                            const Position&                pos,
+                                            Eval::NNUE::AccumulatorStack&  accumulators,
+                                            Eval::NNUE::AccumulatorCaches& caches,
+                                            int                            optimism,
+                                            Policy::NodeType               nodeType);
 }  // namespace Eval
 
 }  // namespace Stockfish

@@ -188,6 +188,33 @@ Network<Arch, Transformer>::evaluate(const Position&                         pos
     return {static_cast<Value>(psqt / OutputScale), static_cast<Value>(positional / OutputScale)};
 }
 
+template<typename Arch, typename Transformer>
+PolicyEvalOutput
+Network<Arch, Transformer>::evaluate_with_policy(const Position&                         pos,
+                                                 AccumulatorStack&                       accumulatorStack,
+                                                 AccumulatorCaches::Cache<FTDimensions>& cache) const {
+
+    PolicyEvalOutput out{};
+    constexpr uint64_t alignment = CacheLineSize;
+
+    alignas(alignment)
+      TransformedFeatureType transformedFeatures[FeatureTransformer<FTDimensions>::BufferSize];
+
+    ASSERT_ALIGNED(transformedFeatures, alignment);
+
+    const int bucket = (pos.count<ALL_PIECES>() - 1) / 4;
+    const auto psqt =
+      featureTransformer.transform(pos, accumulatorStack, cache, transformedFeatures, bucket);
+    const auto positional = network[bucket].propagate(transformedFeatures, &out.tap);
+
+    out.psqt       = static_cast<Value>(psqt / OutputScale);
+    out.positional = static_cast<Value>(positional / OutputScale);
+    out.bucket     = static_cast<uint8_t>(bucket);
+    out.isSmallNet = FTDimensions == TransformedFeatureDimensionsSmall;
+    out.hasPolicy  = FTDimensions == TransformedFeatureDimensionsBig;
+    return out;
+}
+
 
 template<typename Arch, typename Transformer>
 void Network<Arch, Transformer>::verify(std::string                                  evalfilePath,

@@ -50,6 +50,15 @@ enum class EmbeddedNNUEType {
 
 using NetworkOutput = std::tuple<Value, Value>;
 
+struct PolicyEvalOutput {
+    Value     psqt       = VALUE_ZERO;
+    Value     positional = VALUE_ZERO;
+    PolicyTap tap{};
+    uint8_t   bucket     = 0;
+    bool      isSmallNet = false;
+    bool      hasPolicy  = false;
+};
+
 // The network must be a trivial type, i.e. the memory must be in-line.
 // This is required to allow sharing the network via shared memory, as
 // there is no way to run destructors.
@@ -76,6 +85,9 @@ class Network {
     NetworkOutput evaluate(const Position&                         pos,
                            AccumulatorStack&                       accumulatorStack,
                            AccumulatorCaches::Cache<FTDimensions>& cache) const;
+    PolicyEvalOutput evaluate_with_policy(const Position&                         pos,
+                                          AccumulatorStack&                       accumulatorStack,
+                                          AccumulatorCaches::Cache<FTDimensions>& cache) const;
 
 
     void verify(std::string evalfilePath, const std::function<void(std::string_view)>&) const;

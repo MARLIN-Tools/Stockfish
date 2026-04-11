@@ -88,7 +88,8 @@ MovePicker::MovePicker(const Position&              p,
                        const CapturePieceToHistory* cph,
                        const PieceToHistory**       ch,
                        const SharedHistories*       sh,
-                       int                          pl) :
+                       int                          pl,
+                       const Policy::Context*       policyCtx) :
     pos(p),
     mainHistory(mh),
     lowPlyHistory(lph),
@@ -97,7 +98,8 @@ MovePicker::MovePicker(const Position&              p,
     sharedHistory(sh),
     ttMove(ttm),
     depth(d),
-    ply(pl) {
+    ply(pl),
+    policy(policyCtx) {
 
     if (pos.checkers())
         stage = EVASION_TT + !(ttm && pos.pseudo_legal(ttm));
@@ -112,7 +114,8 @@ MovePicker::MovePicker(const Position& p, Move ttm, int th, const CapturePieceTo
     pos(p),
     captureHistory(cph),
     ttMove(ttm),
-    threshold(th) {
+    threshold(th),
+    policy(nullptr) {
     assert(!pos.checkers());
 
     stage = PROBCUT_TT + !(ttm && pos.capture_stage(ttm) && pos.pseudo_legal(ttm));
@@ -177,6 +180,9 @@ ExtMove* MovePicker::score(const MoveList<Type>& ml) {
 
             if (ply < LOW_PLY_HISTORY_SIZE)
                 m.value += 8 * (*lowPlyHistory)[ply][m.raw()] / (1 + ply);
+
+            if (policy && policy->enabled)
+                m.value += Policy::quiet_bonus(*policy, pos, m);
         }
 
         else  // Type == EVASIONS

@@ -37,6 +37,7 @@
 #include "nnue/network.h"
 #include "nnue/nnue_accumulator.h"
 #include "numa.h"
+#include "policy_head.h"
 #include "position.h"
 #include "score.h"
 #include "syzygy/tbprobe.h"
@@ -328,6 +329,7 @@ class Worker {
     TimePoint elapsed_time() const;
 
     Value evaluate(const Position&);
+    Policy::StaticEvalInfo evaluate_with_policy(const Position&, Policy::NodeType);
 
     LimitsType limits;
 

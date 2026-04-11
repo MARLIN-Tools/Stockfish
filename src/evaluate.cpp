@@ -37,6 +37,23 @@
 
 namespace Stockfish {
 
+namespace {
+
+Value finalize_nnue_eval(const Position& pos, Value psqt, Value positional, int optimism) {
+    Value nnue = (125 * psqt + 131 * positional) / 128;
+
+    int nnueComplexity = std::abs(psqt - positional);
+    optimism += optimism * nnueComplexity / 476;
+    nnue -= nnue * nnueComplexity / 18236;
+
+    int material = 534 * pos.count<PAWN>() + pos.non_pawn_material();
+    int v        = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+    v -= v * pos.rule50_count() / 199;
+    return std::clamp(v, VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1);
+}
+
+}  // namespace
+
 // Returns a static, purely materialistic evaluation of the position from
 // the point of view of the side to move. It can be divided by PawnValue to get
 // an approximation of the material advantage on the board in terms of pawns.
@@ -62,31 +79,53 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     auto [psqt, positional] = smallNet ? networks.small.evaluate(pos, accumulators, caches.small)
                                        : networks.big.evaluate(pos, accumulators, caches.big);
 
-    Value nnue = (125 * psqt + 131 * positional) / 128;
-
     // Re-evaluate the position when higher eval accuracy is worth the time spent
-    if (smallNet && (std::abs(nnue) < 277))
+    if (smallNet && (std::abs((125 * psqt + 131 * positional) / 128) < 277))
     {
         std::tie(psqt, positional) = networks.big.evaluate(pos, accumulators, caches.big);
-        nnue                       = (125 * psqt + 131 * positional) / 128;
-        smallNet                   = false;
     }
 
-    // Blend optimism and eval with nnue complexity
-    int nnueComplexity = std::abs(psqt - positional);
-    optimism += optimism * nnueComplexity / 476;
-    nnue -= nnue * nnueComplexity / 18236;
+    return finalize_nnue_eval(pos, psqt, positional, optimism);
+}
 
-    int material = 534 * pos.count<PAWN>() + pos.non_pawn_material();
-    int v        = (nnue * (77871 + material) + optimism * (7191 + material)) / 77871;
+Policy::StaticEvalInfo Eval::evaluate_with_policy(const Eval::NNUE::Networks&    networks,
+                                                  const Position&                pos,
+                                                  Eval::NNUE::AccumulatorStack&  accumulators,
+                                                  Eval::NNUE::AccumulatorCaches& caches,
+                                                  int                            optimism,
+                                                  Policy::NodeType               nodeType) {
 
-    // Damp down the evaluation linearly when shuffling
-    v -= v * pos.rule50_count() / 199;
+    assert(!pos.checkers());
 
-    // Guarantee evaluation does not hit the tablebase range
-    v = std::clamp(v, VALUE_TB_LOSS_IN_MAX_PLY + 1, VALUE_TB_WIN_IN_MAX_PLY - 1);
+    Policy::StaticEvalInfo out{};
+    Value                  psqt;
+    Value                  positional;
 
-    return v;
+    if (use_smallnet(pos))
+    {
+        std::tie(psqt, positional) = networks.small.evaluate(pos, accumulators, caches.small);
+        Value nnue                 = (125 * psqt + 131 * positional) / 128;
+
+        if (std::abs(nnue) < 277)
+        {
+            auto big = networks.big.evaluate_with_policy(pos, accumulators, caches.big);
+            psqt = big.psqt;
+            positional = big.positional;
+            out.policy = Policy::make_context(big.tap, big.bucket, nodeType, big.psqt);
+            out.hasPolicy = big.hasPolicy;
+        }
+    }
+    else
+    {
+        auto big = networks.big.evaluate_with_policy(pos, accumulators, caches.big);
+        psqt = big.psqt;
+        positional = big.positional;
+        out.policy = Policy::make_context(big.tap, big.bucket, nodeType, big.psqt);
+        out.hasPolicy = big.hasPolicy;
+    }
+
+    out.eval = finalize_nnue_eval(pos, psqt, positional, optimism);
+    return out;
 }
 
 // Like evaluate(), but instead of returning a value, it returns

@@ -41,6 +41,7 @@
 #include "movepick.h"
 #include "nnue/network.h"
 #include "nnue/nnue_accumulator.h"
+#include "policy_head.h"
 #include "position.h"
 #include "syzygy/tbprobe.h"
 #include "thread.h"
@@ -725,13 +726,39 @@ Value Search::Worker::search(
     ttCapture    = ttData.move && pos.capture_stage(ttData.move);
 
     // Step 5. Static evaluation of the position
-    Value      unadjustedStaticEval = VALUE_NONE;
-    const auto correctionValue      = correction_value(*this, pos, ss);
+    Value                 unadjustedStaticEval = VALUE_NONE;
+    Policy::Context       localPolicy{};
+    const Policy::Context* policy             = nullptr;
+    const auto            correctionValue     = correction_value(*this, pos, ss);
+    const bool usePolicyEval = depth >= 3 && !excludedMove && Policy::enabled() && !ss->inCheck;
     // Skip early pruning when in check
     if (ss->inCheck)
         ss->staticEval = eval = (ss - 2)->staticEval;
     else if (excludedMove)
         unadjustedStaticEval = eval = ss->staticEval;
+    else if (usePolicyEval)
+    {
+        const auto policyNodeType =
+          PvNode ? Policy::NodeType::PV : cutNode ? Policy::NodeType::Cut : Policy::NodeType::All;
+        auto sei = evaluate_with_policy(pos, policyNodeType);
+
+        unadjustedStaticEval = sei.eval;
+        ss->staticEval = eval = to_corrected_static_eval(unadjustedStaticEval, correctionValue);
+
+        if (sei.hasPolicy)
+        {
+            localPolicy = sei.policy;
+            policy      = &localPolicy;
+        }
+
+        if (ss->ttHit && is_valid(ttData.value)
+            && (ttData.bound & (ttData.value > eval ? BOUND_LOWER : BOUND_UPPER)))
+            eval = ttData.value;
+
+        if (!ss->ttHit)
+            ttWriter.write(posKey, VALUE_NONE, ss->ttPv, BOUND_NONE, DEPTH_UNSEARCHED,
+                           Move::none(), unadjustedStaticEval, tt.generation());
+    }
     else if (ss->ttHit)
     {
         // Never assume anything about values stored in TT
@@ -1009,7 +1036,7 @@ moves_loop:  // When in check, search starts here
 
 
     MovePicker mp(pos, ttData.move, depth, &mainHistory, &lowPlyHistory, &captureHistory, contHist,
-                  &sharedHistory, ss->ply);
+                  &sharedHistory, ss->ply, policy);
 
     value = bestValue;
 
@@ -1768,6 +1795,12 @@ TimePoint Search::Worker::elapsed_time() const { return main_manager()->tm.elaps
 Value Search::Worker::evaluate(const Position& pos) {
     return Eval::evaluate(networks[numaAccessToken], pos, accumulatorStack, refreshTable,
                           optimism[pos.side_to_move()]);
+}
+
+Policy::StaticEvalInfo Search::Worker::evaluate_with_policy(const Position& pos,
+                                                            Policy::NodeType nodeType) {
+    return Eval::evaluate_with_policy(networks[numaAccessToken], pos, accumulatorStack,
+                                      refreshTable, optimism[pos.side_to_move()], nodeType);
 }
 
 namespace {

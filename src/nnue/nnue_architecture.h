@@ -51,6 +51,13 @@ constexpr int       L3Small                           = 32;
 constexpr IndexType PSQTBuckets = 8;
 constexpr IndexType LayerStacks = 8;
 
+struct PolicyTap {
+    static constexpr int MaxActs = 2 * L2Big;
+    int16_t acts[MaxActs]{};
+    int16_t fwd = 0;
+    uint8_t actCount = 0;
+};
+
 // If vector instructions are enabled, we update and refresh the
 // accumulator tile by tile such that each tile fits in the CPU's
 // vector registers.
@@ -99,7 +106,8 @@ struct NetworkArchitecture {
             && fc_2.write_parameters(stream);
     }
 
-    std::int32_t propagate(const TransformedFeatureType* transformedFeatures) const {
+    std::int32_t propagate(const TransformedFeatureType* transformedFeatures,
+                           PolicyTap*                   tap = nullptr) const {
         struct alignas(CacheLineSize) Buffer {
             alignas(CacheLineSize) typename decltype(fc_0)::OutputBuffer fc_0_out;
             alignas(CacheLineSize) typename decltype(ac_sqr_0)::OutputType
@@ -117,6 +125,16 @@ struct NetworkArchitecture {
         fc_0.propagate(transformedFeatures, buffer.fc_0_out);
         ac_sqr_0.propagate(buffer.fc_0_out, buffer.ac_sqr_0_out);
         ac_0.propagate(buffer.fc_0_out, buffer.ac_0_out);
+        if (tap)
+        {
+            tap->actCount = uint8_t(2 * FC_0_OUTPUTS);
+            for (int i = 0; i < FC_0_OUTPUTS; ++i)
+            {
+                tap->acts[i]                = buffer.ac_sqr_0_out[i];
+                tap->acts[i + FC_0_OUTPUTS] = buffer.ac_0_out[i];
+            }
+            tap->fwd = int16_t(buffer.fc_0_out[FC_0_OUTPUTS]);
+        }
         std::memcpy(buffer.ac_sqr_0_out + FC_0_OUTPUTS, buffer.ac_0_out,
                     FC_0_OUTPUTS * sizeof(typename decltype(ac_0)::OutputType));
         fc_1.propagate(buffer.ac_sqr_0_out, buffer.fc_1_out);

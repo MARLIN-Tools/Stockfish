@@ -36,6 +36,7 @@
 #include "nnue/nnue_misc.h"
 #include "numa.h"
 #include "perft.h"
+#include "policy_head.h"
 #include "position.h"
 #include "search.h"
 #include "shm.h"
@@ -142,6 +143,14 @@ Engine::Engine(std::optional<std::string> path) :
           load_small_network(o);
           return std::nullopt;
       }));
+
+    options.add("UsePolicyHead", Option(false, [](const Option& o) {
+                    Policy::set_enabled(bool(o));
+                    return std::optional<std::string>(bool(o) ? "Policy head enabled"
+                                                              : "Policy head disabled");
+                }));
+
+    options.add("PolicyFile", Option("", [](const Option& o) { return Policy::load_from_option(o); }));
 
     threads.clear();
     threads.ensure_network_replicated();
