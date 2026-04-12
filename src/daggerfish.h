@@ -162,6 +162,11 @@ struct GraphStats {
     uint64_t verifiedStores        = 0;
     uint64_t localHints            = 0;
     uint64_t rejectedSpeculative   = 0;
+    uint64_t graphOrderProbes      = 0;
+    uint64_t graphOrderHits        = 0;
+    uint64_t graphOrderCutoffs     = 0;
+    uint64_t localOwnerClaims      = 0;
+    uint64_t remoteOwnerClaims     = 0;
 };
 
 struct InflightCell {
@@ -236,13 +241,18 @@ class GraphTable {
                                                              Depth d,
                                                              Move m,
                                                              HintKind kind);
-    InflightGuard                           begin_inflight(Key key, Depth depth, uint16_t owner);
+    InflightGuard                           begin_inflight(Key key,
+                                                           Depth depth,
+                                                           uint16_t owner,
+                                                           uint16_t preferredOwner);
     std::tuple<bool, GraphData>             wait_for_inflight(Key      key,
                                                               Depth    depth,
                                                               uint16_t owner,
                                                               Value    alpha,
                                                               Value    beta,
                                                               int      spins) const;
+    uint16_t                                 owner_for(Key key, size_t threadCount) const;
+    void                                     record_order_probe(bool hit, bool cutoff);
     void                                     record_cutoff();
     void                                     record_blocked(RepetitionKind kind);
     GraphStats                               stats() const;
@@ -294,6 +304,11 @@ class GraphTable {
     mutable std::atomic<uint64_t> verifiedStores {0};
     mutable std::atomic<uint64_t> localHints {0};
     mutable std::atomic<uint64_t> rejectedSpeculative {0};
+    mutable std::atomic<uint64_t> graphOrderProbes {0};
+    mutable std::atomic<uint64_t> graphOrderHits {0};
+    mutable std::atomic<uint64_t> graphOrderCutoffs {0};
+    mutable std::atomic<uint64_t> localOwnerClaims {0};
+    mutable std::atomic<uint64_t> remoteOwnerClaims {0};
 };
 
 RepContext make_rep_context(const Position& pos);

@@ -335,7 +335,7 @@ void GraphTable::store_local_hint(Key, Value v, Bound b, Depth, Move, HintKind) 
         rejectedSpeculative.fetch_add(1, std::memory_order_relaxed);
 }
 
-InflightGuard GraphTable::begin_inflight(Key key, Depth depth, uint16_t owner) {
+InflightGuard GraphTable::begin_inflight(Key key, Depth depth, uint16_t owner, uint16_t preferredOwner) {
     if (!inflightEntries || inflightEntryCount == 0 || key == 0 || owner == 0)
         return {};
 
@@ -346,11 +346,13 @@ InflightGuard GraphTable::begin_inflight(Key key, Depth depth, uint16_t owner) {
     if (cell.key.compare_exchange_strong(empty, key, std::memory_order_acq_rel,
                                          std::memory_order_relaxed))
     {
+        const bool localOwner = preferredOwner == 0 || preferredOwner == owner;
         cell.depth.store(int16_t(depth), std::memory_order_release);
         cell.owner.store(owner, std::memory_order_release);
         cell.waiters.store(0, std::memory_order_relaxed);
         cell.state.store(uint8_t(GraphNodeState::Solving), std::memory_order_release);
         inflightClaims.fetch_add(1, std::memory_order_relaxed);
+        (localOwner ? localOwnerClaims : remoteOwnerClaims).fetch_add(1, std::memory_order_relaxed);
         return InflightGuard(this, slot, key, depth, owner);
     }
 
@@ -410,6 +412,21 @@ std::tuple<bool, GraphData> GraphTable::wait_for_inflight(
                              VALUE_NONE, DEPTH_ENTRY_OFFSET, false}};
 }
 
+uint16_t GraphTable::owner_for(Key key, size_t threadCount) const {
+    if (threadCount == 0)
+        return 0;
+
+    return uint16_t((mix_key(key) % threadCount) + 1);
+}
+
+void GraphTable::record_order_probe(bool hit, bool cutoff) {
+    graphOrderProbes.fetch_add(1, std::memory_order_relaxed);
+    if (hit)
+        graphOrderHits.fetch_add(1, std::memory_order_relaxed);
+    if (cutoff)
+        graphOrderCutoffs.fetch_add(1, std::memory_order_relaxed);
+}
+
 void GraphTable::record_cutoff() {
     graphCutoffs.fetch_add(1, std::memory_order_relaxed);
 }
@@ -441,7 +458,12 @@ GraphStats GraphTable::stats() const {
                       inflightAbandoned.load(std::memory_order_relaxed),
                       verifiedStores.load(std::memory_order_relaxed),
                       localHints.load(std::memory_order_relaxed),
-                      rejectedSpeculative.load(std::memory_order_relaxed)};
+                      rejectedSpeculative.load(std::memory_order_relaxed),
+                      graphOrderProbes.load(std::memory_order_relaxed),
+                      graphOrderHits.load(std::memory_order_relaxed),
+                      graphOrderCutoffs.load(std::memory_order_relaxed),
+                      localOwnerClaims.load(std::memory_order_relaxed),
+                      remoteOwnerClaims.load(std::memory_order_relaxed)};
 }
 
 std::string GraphTable::stats_string() const {
@@ -467,7 +489,12 @@ std::string GraphTable::stats_string() const {
        << " inflight_abandoned " << s.inflightAbandoned
        << " verified_stores " << s.verifiedStores
        << " local_hints " << s.localHints
-       << " rejected_speculative " << s.rejectedSpeculative;
+       << " rejected_speculative " << s.rejectedSpeculative
+       << " graph_order_probes " << s.graphOrderProbes
+       << " graph_order_hits " << s.graphOrderHits
+       << " graph_order_cutoffs " << s.graphOrderCutoffs
+       << " local_owner_claims " << s.localOwnerClaims
+       << " remote_owner_claims " << s.remoteOwnerClaims;
     return os.str();
 }
 
@@ -607,6 +634,11 @@ void GraphTable::reset_stats() {
     verifiedStores.store(0, std::memory_order_relaxed);
     localHints.store(0, std::memory_order_relaxed);
     rejectedSpeculative.store(0, std::memory_order_relaxed);
+    graphOrderProbes.store(0, std::memory_order_relaxed);
+    graphOrderHits.store(0, std::memory_order_relaxed);
+    graphOrderCutoffs.store(0, std::memory_order_relaxed);
+    localOwnerClaims.store(0, std::memory_order_relaxed);
+    remoteOwnerClaims.store(0, std::memory_order_relaxed);
 }
 
 RepContext make_rep_context(const Position& pos) {

@@ -132,6 +132,13 @@ Value graph_value_from_tt(Value v, int ply, int r50c);
 bool  graph_can_cutoff(const Daggerfish::GraphData& data, Value alpha, Value beta, Value& value);
 Daggerfish::RepetitionKind graph_repetition_kind(const Position& pos, Stack* ss);
 Daggerfish::PublicationGate graph_publication_gate(const Position& pos, Stack* ss);
+Move graph_ordering_move(Position&                pos,
+                         Stack*                   ss,
+                         TranspositionTable&      tt,
+                         Daggerfish::GraphTable&  graph,
+                         Move                     skipMove,
+                         Depth                    childDepth,
+                         Value                    beta);
 void  update_pv(Move* pv, Move move, const Move* childPv);
 void  update_continuation_histories(Stack* ss, Piece pc, Square to, int bonus);
 void  update_quiet_histories(
@@ -738,6 +745,9 @@ Value Search::Worker::search(
       useDaggerfish && !excludedMove ? graph_publication_gate(pos, ss)
                                      : Daggerfish::PublicationGate::LocalOnly;
     const bool graphSafe = graphGate == Daggerfish::PublicationGate::VerifiedGlobal;
+    const uint16_t graphWorker = uint16_t(threadIdx + 1);
+    const uint16_t graphOwner =
+      graphSafe ? graph.owner_for(graphKey, threads.num_threads()) : uint16_t(0);
     if (graphSafe)
     {
         std::tie(graphHit, graphData) = graph.probe(graphKey, depth);
@@ -750,8 +760,9 @@ Value Search::Worker::search(
 
         if (!graphHit && !rootNode && depth > DEPTH_QS)
         {
+            const int waitSpins = graphOwner && graphOwner != graphWorker ? 32 : 8;
             std::tie(graphHit, graphData) =
-              graph.wait_for_inflight(graphKey, depth, uint16_t(threadIdx + 1), alpha, beta, 16);
+              graph.wait_for_inflight(graphKey, depth, graphWorker, alpha, beta, waitSpins);
             if (graphHit)
             {
                 graphData.lower = graph_value_from_tt(graphData.lower, ss->ply, pos.rule50_count());
@@ -1100,12 +1111,22 @@ moves_loop:  // When in check, search starts here
     }
 
     if (graphSafe && !graphHit && !rootNode && depth > DEPTH_QS)
-        graphInflight = graph.begin_inflight(graphKey, depth, uint16_t(threadIdx + 1));
+        graphInflight =
+          graph.begin_inflight(graphKey, depth, graphWorker, graphOwner);
 
     const PieceToHistory* contHist[] = {
       (ss - 1)->continuationHistory, (ss - 2)->continuationHistory, (ss - 3)->continuationHistory,
       (ss - 4)->continuationHistory, (ss - 5)->continuationHistory, (ss - 6)->continuationHistory};
 
+    if (!PvNode && graphSafe && !ttData.move && depth >= 4)
+    {
+        Move graphMove = graph_ordering_move(pos, ss, tt, graph, excludedMove, depth - 1, beta);
+        if (graphMove)
+        {
+            ttData.move = graphMove;
+            ttCapture   = pos.capture_stage(ttData.move);
+        }
+    }
 
     MovePicker mp(pos, ttData.move, depth, &mainHistory, &lowPlyHistory, &captureHistory, contHist,
                   &sharedHistory, ss->ply);
@@ -2067,6 +2088,66 @@ Daggerfish::PublicationGate graph_publication_gate(const Position& pos, Stack* s
     return graph_repetition_kind(pos, ss) == Daggerfish::RepetitionKind::None
            ? Daggerfish::PublicationGate::VerifiedGlobal
            : Daggerfish::PublicationGate::RepetitionSensitive;
+}
+
+Move graph_ordering_move(Position&               pos,
+                         Stack*                  ss,
+                         TranspositionTable&     tt,
+                         Daggerfish::GraphTable& graph,
+                         Move                    skipMove,
+                         Depth                   childDepth,
+                         Value                   beta) {
+    Move bestMove = Move::none();
+    int  bestScore = 0;
+    int  searched  = 0;
+
+    for (Move move : MoveList<LEGAL>(pos))
+    {
+        if (move == skipMove)
+            continue;
+
+        StateInfo    graphSt;
+        DirtyPiece   dirtyPiece;
+        DirtyThreats dirtyThreats;
+
+        pos.do_move(move, graphSt, pos.gives_check(move), dirtyPiece, dirtyThreats, &tt, nullptr);
+        (ss + 1)->ply = ss->ply + 1;
+
+        bool cutoff = false;
+        bool hit    = false;
+        int  score  = 0;
+
+        if (graph_publication_gate(pos, ss + 1) == Daggerfish::PublicationGate::VerifiedGlobal)
+        {
+            Daggerfish::GraphData data{Move::none(), -VALUE_INFINITE, VALUE_INFINITE, VALUE_NONE,
+                                       DEPTH_ENTRY_OFFSET, false};
+            std::tie(hit, data) = graph.probe(pos.dagger_key(), childDepth);
+
+            if (hit)
+            {
+                Value childUpper = graph_value_from_tt(data.upper, ss->ply + 1, pos.rule50_count());
+                cutoff           = childUpper <= -beta;
+                score            = (cutoff ? 1000000 : 1000) + int(data.depth) * 16
+                      + 8 * bool(data.move);
+            }
+        }
+        else
+            graph.record_blocked(graph_repetition_kind(pos, ss + 1));
+
+        pos.undo_move(move);
+
+        graph.record_order_probe(hit, cutoff);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestMove  = move;
+        }
+
+        if (cutoff || ++searched >= 48)
+            break;
+    }
+
+    return bestMove;
 }
 
 
