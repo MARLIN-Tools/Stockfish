@@ -128,6 +128,10 @@ void update_correction_history(const Position& pos,
 Value value_draw(size_t nodes) { return VALUE_DRAW - 1 + Value(nodes & 0x2); }
 Value value_to_tt(Value v, int ply);
 Value value_from_tt(Value v, int ply, int r50c);
+Value graph_value_from_tt(Value v, int ply, int r50c);
+bool  graph_can_cutoff(const Daggerfish::GraphData& data, Value alpha, Value beta, Value& value);
+Daggerfish::RepetitionKind graph_repetition_kind(const Position& pos, Stack* ss);
+Daggerfish::PublicationGate graph_publication_gate(const Position& pos, Stack* ss);
 void  update_pv(Move* pv, Move move, const Move* childPv);
 void  update_continuation_histories(Stack* ss, Piece pc, Square to, int bonus);
 void  update_quiet_histories(
@@ -169,6 +173,7 @@ Search::Worker::Worker(SharedState&                    sharedState,
     options(sharedState.options),
     threads(sharedState.threads),
     tt(sharedState.tt),
+    graph(sharedState.graph),
     networks(sharedState.networks),
     refreshTable(networks[token]) {
     clear();
@@ -195,6 +200,7 @@ void Search::Worker::start_searching() {
     main_manager()->tm.init(limits, rootPos.side_to_move(), rootPos.game_ply(), options,
                             main_manager()->originalTimeAdjust);
     tt.new_search();
+    graph.new_search();
 
     if (rootMoves.empty())
     {
@@ -246,6 +252,9 @@ void Search::Worker::start_searching() {
     // Send PV info if it has changed since last output in iterative_deepening().
     if (!uciPvSent || bestThread != this)
         main_manager()->pv(*bestThread, threads, tt, bestThread->completedDepth);
+
+    if (options["Daggerfish"] && options["DaggerfishStats"] && graph.enabled())
+        sync_cout << "info string " << graph.stats_string() << sync_endl;
 
     // In rare cases, pv() may change the ponder move through syzygy_extend_pv().
     std::string ponder;
@@ -717,10 +726,60 @@ Value Search::Worker::search(
     excludedMove                   = ss->excludedMove;
     posKey                         = pos.key();
     auto [ttHit, ttData, ttWriter] = tt.probe(posKey);
+    const bool useDaggerfish       = options["Daggerfish"] && graph.enabled();
+    Key        graphKey            = useDaggerfish ? pos.dagger_key() : 0;
+    bool       graphHit            = false;
+    Daggerfish::GraphData graphData{Move::none(), -VALUE_INFINITE, VALUE_INFINITE, VALUE_NONE,
+                                    DEPTH_ENTRY_OFFSET, false};
+    Daggerfish::InflightGuard graphInflight;
+    const auto graphKind =
+      useDaggerfish && !excludedMove ? graph_repetition_kind(pos, ss) : Daggerfish::RepetitionKind::None;
+    const auto graphGate =
+      useDaggerfish && !excludedMove ? graph_publication_gate(pos, ss)
+                                     : Daggerfish::PublicationGate::LocalOnly;
+    const bool graphSafe = graphGate == Daggerfish::PublicationGate::VerifiedGlobal;
+    if (graphSafe)
+    {
+        std::tie(graphHit, graphData) = graph.probe(graphKey, depth);
+        if (graphHit)
+        {
+            graphData.lower = graph_value_from_tt(graphData.lower, ss->ply, pos.rule50_count());
+            graphData.upper = graph_value_from_tt(graphData.upper, ss->ply, pos.rule50_count());
+            graphData.eval  = is_valid(graphData.eval) ? graphData.eval : VALUE_NONE;
+        }
+
+        if (!graphHit && !rootNode && depth > DEPTH_QS)
+        {
+            std::tie(graphHit, graphData) =
+              graph.wait_for_inflight(graphKey, depth, uint16_t(threadIdx + 1), alpha, beta, 16);
+            if (graphHit)
+            {
+                graphData.lower = graph_value_from_tt(graphData.lower, ss->ply, pos.rule50_count());
+                graphData.upper = graph_value_from_tt(graphData.upper, ss->ply, pos.rule50_count());
+                graphData.eval  = is_valid(graphData.eval) ? graphData.eval : VALUE_NONE;
+            }
+        }
+
+    }
+    else if (graphGate == Daggerfish::PublicationGate::RepetitionSensitive)
+    {
+        graph.record_blocked(graphKind);
+
+        Daggerfish::RepContext repContext = Daggerfish::make_rep_context(pos);
+        std::tie(graphHit, graphData) = graph.probe_repetition(graphKey, depth, repContext, graphKind);
+        if (graphHit)
+        {
+            graphData.lower = graph_value_from_tt(graphData.lower, ss->ply, pos.rule50_count());
+            graphData.upper = graph_value_from_tt(graphData.upper, ss->ply, pos.rule50_count());
+            graphData.eval  = is_valid(graphData.eval) ? graphData.eval : VALUE_NONE;
+        }
+    }
     // Need further processing of the saved data
     ss->ttHit    = ttHit;
     ttData.move  = rootNode ? rootMoves[pvIdx].pv[0] : ttHit ? ttData.move : Move::none();
     ttData.value = ttHit ? value_from_tt(ttData.value, ss->ply, pos.rule50_count()) : VALUE_NONE;
+    if (!ttData.move && graphHit)
+        ttData.move = graphData.move;
     ss->ttPv     = excludedMove ? ss->ttPv : PvNode || (ttHit && ttData.is_pv);
     ttCapture    = ttData.move && pos.capture_stage(ttData.move);
 
@@ -814,6 +873,12 @@ Value Search::Worker::search(
         }
     }
 
+    if (!PvNode && graphHit && graph_can_cutoff(graphData, alpha, beta, value))
+    {
+        graph.record_cutoff();
+        return value;
+    }
+
     // Step 6. Tablebases probe
     if (!rootNode && !excludedMove && tbConfig.cardinality)
     {
@@ -854,6 +919,12 @@ Value Search::Worker::search(
                                    std::min(MAX_PLY - 1, depth + 6), Move::none(), VALUE_NONE,
                                    tt.generation());
 
+                    if (graphSafe)
+                        graph.store_verified(graphKey, value_to_tt(value, ss->ply), ss->ttPv, b,
+                                             std::min(MAX_PLY - 1, depth + 6), Move::none(),
+                                             VALUE_NONE, graph.generation(),
+                                             Daggerfish::PublishSource::Tablebase);
+
                     return value;
                 }
 
@@ -886,7 +957,13 @@ Value Search::Worker::search(
     // If eval is really low, skip search entirely and return the qsearch value.
     // For PvNodes, we must have a guard against mates being returned.
     if (!PvNode && eval < alpha - 502 - 306 * depth * depth)
-        return qsearch<NonPV>(pos, ss, alpha, beta);
+    {
+        value = qsearch<NonPV>(pos, ss, alpha, beta);
+        if (useDaggerfish)
+            graph.store_local_hint(graphKey, value_to_tt(value, ss->ply), BOUND_UPPER, depth,
+                                   Move::none(), Daggerfish::HintKind::Razoring);
+        return value;
+    }
 
     // Step 8. Futility pruning: child node
     // The depth condition is important for mate finding.
@@ -901,7 +978,13 @@ Value Search::Worker::search(
 
         if (!ss->ttPv && depth < 15 && eval - futility_margin(depth) >= beta && eval >= beta
             && (!ttData.move || ttCapture) && !is_loss(beta) && !is_win(eval))
-            return (2 * beta + eval) / 3;
+        {
+            value = (2 * beta + eval) / 3;
+            if (useDaggerfish)
+                graph.store_local_hint(graphKey, value_to_tt(value, ss->ply), BOUND_LOWER, depth,
+                                       Move::none(), Daggerfish::HintKind::Futility);
+            return value;
+        }
     }
 
     // Step 9. Null move search with verification search
@@ -921,6 +1004,10 @@ Value Search::Worker::search(
         // Do not return unproven mate or TB scores
         if (nullValue >= beta && !is_win(nullValue))
         {
+            if (useDaggerfish)
+                graph.store_local_hint(graphKey, value_to_tt(nullValue, ss->ply), BOUND_LOWER,
+                                       depth, Move::null(), Daggerfish::HintKind::NullMove);
+
             if (nmpMinPly || depth < 16)
                 return nullValue;
 
@@ -989,6 +1076,10 @@ Value Search::Worker::search(
                 ttWriter.write(posKey, value_to_tt(value, ss->ply), ss->ttPv, BOUND_LOWER,
                                probCutDepth + 1, move, unadjustedStaticEval, tt.generation());
 
+                if (useDaggerfish)
+                    graph.store_local_hint(graphKey, value_to_tt(value, ss->ply), BOUND_LOWER,
+                                           probCutDepth + 1, move, Daggerfish::HintKind::ProbCut);
+
                 if (!is_decisive(value))
                     return value - (probCutBeta - beta);
             }
@@ -1001,7 +1092,15 @@ moves_loop:  // When in check, search starts here
     probCutBeta = beta + 416;
     if ((ttData.bound & BOUND_LOWER) && ttData.depth >= depth - 4 && ttData.value >= probCutBeta
         && !is_decisive(beta) && is_valid(ttData.value) && !is_decisive(ttData.value))
+    {
+        if (useDaggerfish)
+            graph.store_local_hint(graphKey, value_to_tt(probCutBeta, ss->ply), BOUND_LOWER,
+                                   depth - 4, ttData.move, Daggerfish::HintKind::ProbCut);
         return probCutBeta;
+    }
+
+    if (graphSafe && !graphHit && !rootNode && depth > DEPTH_QS)
+        graphInflight = graph.begin_inflight(graphKey, depth, uint16_t(threadIdx + 1));
 
     const PieceToHistory* contHist[] = {
       (ss - 1)->continuationHistory, (ss - 2)->continuationHistory, (ss - 3)->continuationHistory,
@@ -1175,6 +1274,9 @@ moves_loop:  // When in check, search starts here
             else if (value >= beta && !is_decisive(value))
             {
                 ttMoveHistory << std::max(-424 - 107 * depth, -3375);
+                if (useDaggerfish)
+                    graph.store_local_hint(graphKey, value_to_tt(value, ss->ply), BOUND_LOWER,
+                                           singularDepth, move, Daggerfish::HintKind::Singular);
                 return value;
             }
 
@@ -1193,6 +1295,38 @@ moves_loop:  // When in check, search starts here
             // over current beta
             else if (cutNode)
                 extension = -2;
+        }
+
+        // Daggerfish ETC: a child graph upper bound can prove a fail-high at this
+        // null-window node before searching the child again.
+        if (!rootNode && !PvNode && graphSafe)
+        {
+            StateInfo    graphSt;
+            DirtyPiece   dirtyPiece;
+            DirtyThreats dirtyThreats;
+
+            pos.do_move(move, graphSt, givesCheck, dirtyPiece, dirtyThreats, &tt, nullptr);
+
+            if (graph_publication_gate(pos, ss + 1) == Daggerfish::PublicationGate::VerifiedGlobal)
+            {
+                auto [childHit, childData] = graph.probe(pos.dagger_key(), newDepth + extension);
+                if (childHit)
+                {
+                    childData.upper =
+                      graph_value_from_tt(childData.upper, ss->ply + 1, pos.rule50_count());
+
+                    if (childData.upper <= -beta)
+                    {
+                        pos.undo_move(move);
+                        graph.record_cutoff();
+                        return -childData.upper;
+                    }
+                }
+            }
+            else
+                graph.record_blocked(graph_repetition_kind(pos, ss + 1));
+
+            pos.undo_move(move);
         }
 
         // Step 16. Make the move
@@ -1260,6 +1394,10 @@ moves_loop:  // When in check, search starts here
             // (*Scaler) Shallower searches here don't scale well
             if (value > alpha)
             {
+                if (useDaggerfish && d < newDepth)
+                    graph.store_local_hint(graphKey, value_to_tt(value, ss->ply), BOUND_LOWER, d,
+                                           move, Daggerfish::HintKind::LMR);
+
                 // Adjust full-depth search based on LMR results - if the result was
                 // good enough search deeper, if it was bad enough search shallower.
                 const bool doDeeperSearch    = d < newDepth && value > bestValue + 48;
@@ -1478,12 +1616,27 @@ moves_loop:  // When in check, search starts here
     // Write gathered information in transposition table. Note that the
     // static evaluation is saved as it was before correction history.
     if (!excludedMove && !(rootNode && pvIdx))
+    {
+        const Bound bound = bestValue >= beta    ? BOUND_LOWER
+                         : PvNode && bestMove ? BOUND_EXACT
+                                              : BOUND_UPPER;
+        const Depth storeDepth = moveCount != 0 ? depth : std::min(MAX_PLY - 1, depth + 6);
+
         ttWriter.write(posKey, value_to_tt(bestValue, ss->ply), ss->ttPv,
-                       bestValue >= beta    ? BOUND_LOWER
-                       : PvNode && bestMove ? BOUND_EXACT
-                                            : BOUND_UPPER,
-                       moveCount != 0 ? depth : std::min(MAX_PLY - 1, depth + 6), bestMove,
-                       unadjustedStaticEval, tt.generation());
+                       bound, storeDepth, bestMove, unadjustedStaticEval, tt.generation());
+
+        if (graphSafe)
+            graph.store_verified(graphKey, value_to_tt(bestValue, ss->ply), ss->ttPv, bound,
+                                 storeDepth, bestMove, unadjustedStaticEval,
+                                 graph.generation(),
+                                 Daggerfish::PublishSource::MainSearch);
+        else if (graphGate == Daggerfish::PublicationGate::RepetitionSensitive)
+        {
+            Daggerfish::RepContext repContext = Daggerfish::make_rep_context(pos);
+            graph.store_repetition(graphKey, value_to_tt(bestValue, ss->ply), ss->ttPv, bound,
+                                   storeDepth, bestMove, unadjustedStaticEval, repContext, graphKind);
+        }
+    }
 
     // Adjust correction history if the best move is not a capture
     // and the error direction matches whether we are above/below bounds.
@@ -1558,10 +1711,45 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     // Step 3. Transposition table lookup
     posKey                         = pos.key();
     auto [ttHit, ttData, ttWriter] = tt.probe(posKey);
+    const bool useDaggerfish       = options["Daggerfish"] && graph.enabled();
+    Key        graphKey            = useDaggerfish ? pos.dagger_key() : 0;
+    bool       graphHit            = false;
+    Daggerfish::GraphData graphData{Move::none(), -VALUE_INFINITE, VALUE_INFINITE, VALUE_NONE,
+                                    DEPTH_ENTRY_OFFSET, false};
+    const auto graphKind = useDaggerfish ? graph_repetition_kind(pos, ss)
+                                         : Daggerfish::RepetitionKind::None;
+    const auto graphGate = useDaggerfish ? graph_publication_gate(pos, ss)
+                                         : Daggerfish::PublicationGate::LocalOnly;
+    const bool graphSafe = graphGate == Daggerfish::PublicationGate::VerifiedGlobal;
+    if (graphSafe)
+    {
+        std::tie(graphHit, graphData) = graph.probe(graphKey, DEPTH_QS);
+        if (graphHit)
+        {
+            graphData.lower = graph_value_from_tt(graphData.lower, ss->ply, pos.rule50_count());
+            graphData.upper = graph_value_from_tt(graphData.upper, ss->ply, pos.rule50_count());
+            graphData.eval  = is_valid(graphData.eval) ? graphData.eval : VALUE_NONE;
+        }
+    }
+    else if (graphGate == Daggerfish::PublicationGate::RepetitionSensitive)
+    {
+        graph.record_blocked(graphKind);
+
+        Daggerfish::RepContext repContext = Daggerfish::make_rep_context(pos);
+        std::tie(graphHit, graphData) = graph.probe_repetition(graphKey, DEPTH_QS, repContext, graphKind);
+        if (graphHit)
+        {
+            graphData.lower = graph_value_from_tt(graphData.lower, ss->ply, pos.rule50_count());
+            graphData.upper = graph_value_from_tt(graphData.upper, ss->ply, pos.rule50_count());
+            graphData.eval  = is_valid(graphData.eval) ? graphData.eval : VALUE_NONE;
+        }
+    }
     // Need further processing of the saved data
     ss->ttHit    = ttHit;
     ttData.move  = ttHit ? ttData.move : Move::none();
     ttData.value = ttHit ? value_from_tt(ttData.value, ss->ply, pos.rule50_count()) : VALUE_NONE;
+    if (!ttData.move && graphHit)
+        ttData.move = graphData.move;
     pvHit        = ttHit && ttData.is_pv;
 
     // At non-PV nodes we check for an early TT cutoff
@@ -1569,6 +1757,12 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         && is_valid(ttData.value)  // Can happen when !ttHit or when access race in probe()
         && (ttData.bound & (ttData.value >= beta ? BOUND_LOWER : BOUND_UPPER)))
         return ttData.value;
+
+    if (!PvNode && graphHit && graph_can_cutoff(graphData, alpha, beta, value))
+    {
+        graph.record_cutoff();
+        return value;
+    }
 
     // Step 4. Static evaluation of the position
     Value unadjustedStaticEval = VALUE_NONE;
@@ -1610,6 +1804,10 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
             if (!ss->ttHit)
                 ttWriter.write(posKey, VALUE_NONE, false, BOUND_LOWER, DEPTH_UNSEARCHED,
                                Move::none(), unadjustedStaticEval, tt.generation());
+            if (useDaggerfish)
+                graph.store_local_hint(graphKey, value_to_tt(bestValue, ss->ply), BOUND_LOWER,
+                                       DEPTH_QS, Move::none(),
+                                       Daggerfish::HintKind::QSearchStandPat);
             return bestValue;
         }
 
@@ -1737,9 +1935,20 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 
     // Save gathered info in transposition table. The static evaluation
     // is saved as it was before adjustment by correction history.
-    ttWriter.write(posKey, value_to_tt(bestValue, ss->ply), pvHit,
-                   bestValue >= beta ? BOUND_LOWER : BOUND_UPPER, DEPTH_QS, bestMove,
+    const Bound bound = bestValue >= beta ? BOUND_LOWER : BOUND_UPPER;
+    ttWriter.write(posKey, value_to_tt(bestValue, ss->ply), pvHit, bound, DEPTH_QS, bestMove,
                    unadjustedStaticEval, tt.generation());
+
+    if (graphSafe)
+        graph.store_verified(graphKey, value_to_tt(bestValue, ss->ply), pvHit, bound, DEPTH_QS,
+                             bestMove, unadjustedStaticEval, graph.generation(),
+                             Daggerfish::PublishSource::QSearch);
+    else if (graphGate == Daggerfish::PublicationGate::RepetitionSensitive)
+    {
+        Daggerfish::RepContext repContext = Daggerfish::make_rep_context(pos);
+        graph.store_repetition(graphKey, value_to_tt(bestValue, ss->ply), pvHit, bound, DEPTH_QS,
+                               bestMove, unadjustedStaticEval, repContext, graphKind);
+    }
 
     assert(bestValue > -VALUE_INFINITE && bestValue < VALUE_INFINITE);
 
@@ -1816,6 +2025,48 @@ Value value_from_tt(Value v, int ply, int r50c) {
     }
 
     return v;
+}
+
+Value graph_value_from_tt(Value v, int ply, int r50c) {
+    if (v == -VALUE_INFINITE || v == VALUE_INFINITE)
+        return v;
+
+    return value_from_tt(v, ply, r50c);
+}
+
+bool graph_can_cutoff(const Daggerfish::GraphData& data, Value alpha, Value beta, Value& value) {
+    if (data.lower >= beta)
+    {
+        value = data.lower;
+        return true;
+    }
+
+    if (data.upper <= alpha)
+    {
+        value = data.upper;
+        return true;
+    }
+
+    return false;
+}
+
+Daggerfish::RepetitionKind graph_repetition_kind(const Position& pos, Stack* ss) {
+    if (pos.rule50_count() >= 96)
+        return Daggerfish::RepetitionKind::HighRule50;
+
+    if (pos.has_repeated())
+        return Daggerfish::RepetitionKind::HasRepeated;
+
+    if (pos.upcoming_repetition(ss->ply))
+        return Daggerfish::RepetitionKind::Upcoming;
+
+    return Daggerfish::RepetitionKind::None;
+}
+
+Daggerfish::PublicationGate graph_publication_gate(const Position& pos, Stack* ss) {
+    return graph_repetition_kind(pos, ss) == Daggerfish::RepetitionKind::None
+           ? Daggerfish::PublicationGate::VerifiedGlobal
+           : Daggerfish::PublicationGate::RepetitionSensitive;
 }
 
 

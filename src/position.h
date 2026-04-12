@@ -159,6 +159,7 @@ class Position {
 
     // Accessing hash keys
     Key key() const;
+    Key dagger_key() const;
     Key material_key() const;
     Key pawn_key() const;
     Key minor_piece_key() const;
@@ -318,6 +319,8 @@ inline Key Position::key() const { return adjust_key50(st->key); }
 inline Key Position::adjust_key50(Key k) const {
     return st->rule50 < 14 ? k : k ^ make_key((st->rule50 - 14) / 8);
 }
+
+inline Key Position::dagger_key() const { return st->key ^ make_key(0xDA66E5F150ULL + st->rule50); }
 
 inline Key Position::pawn_key() const { return st->pawnKey; }
 

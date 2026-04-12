@@ -92,6 +92,14 @@ Engine::Engine(std::optional<std::string> path) :
       }));
 
     options.add(  //
+      "Daggerfish", Option(false, [this](const Option&) {
+          set_tt_size(options["Hash"]);
+          return std::nullopt;
+      }));
+
+    options.add("DaggerfishStats", Option(false));
+
+    options.add(  //
       "Clear Hash", Option([this](const Option&) {
           search_clear();
           return std::nullopt;
@@ -166,6 +174,7 @@ void Engine::search_clear() {
     wait_for_search_finished();
 
     tt.clear(threads);
+    graph.clear(threads);
     threads.clear();
 
     // @TODO wont work with multiple instances
@@ -244,7 +253,7 @@ void Engine::set_numa_config_from_option(const std::string& o) {
 
 void Engine::resize_threads() {
     threads.wait_for_search_finished();
-    threads.set(numaContext.get_numa_config(), {options, threads, tt, sharedHists, networks},
+    threads.set(numaContext.get_numa_config(), {options, threads, tt, graph, sharedHists, networks},
                 updateContext);
 
     // Reallocate the hash with the new threadpool size
@@ -255,6 +264,9 @@ void Engine::resize_threads() {
 void Engine::set_tt_size(size_t mb) {
     wait_for_search_finished();
     tt.resize(mb, threads);
+
+    const size_t graphMb = options["Daggerfish"] ? std::max<size_t>(1, mb / 4) : 0;
+    graph.resize(graphMb, threads);
 }
 
 void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }

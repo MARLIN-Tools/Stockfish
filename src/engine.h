@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "daggerfish.h"
 #include "history.h"
 #include "nnue/network.h"
 #include "numa.h"
@@ -122,6 +123,7 @@ class Engine {
     OptionsMap                                         options;
     ThreadPool                                         threads;
     TranspositionTable                                 tt;
+    Daggerfish::GraphTable                             graph;
     LazyNumaReplicatedSystemWide<Eval::NNUE::Networks> networks;
 
     Search::SearchManager::UpdateContext  updateContext;

@@ -32,6 +32,7 @@
 #include <string_view>
 #include <vector>
 
+#include "daggerfish.h"
 #include "history.h"
 #include "misc.h"
 #include "nnue/network.h"
@@ -138,17 +139,20 @@ struct SharedState {
     SharedState(const OptionsMap&                                         optionsMap,
                 ThreadPool&                                               threadPool,
                 TranspositionTable&                                       transpositionTable,
+                Daggerfish::GraphTable&                                   graphTable,
                 std::map<NumaIndex, SharedHistories>&                     sharedHists,
                 const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& nets) :
         options(optionsMap),
         threads(threadPool),
         tt(transpositionTable),
+        graph(graphTable),
         sharedHistories(sharedHists),
         networks(nets) {}
 
     const OptionsMap&                                         options;
     ThreadPool&                                               threads;
     TranspositionTable&                                       tt;
+    Daggerfish::GraphTable&                                   graph;
     std::map<NumaIndex, SharedHistories>&                     sharedHistories;
     const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& networks;
 };
@@ -359,6 +363,7 @@ class Worker {
     const OptionsMap&                                         options;
     ThreadPool&                                               threads;
     TranspositionTable&                                       tt;
+    Daggerfish::GraphTable&                                   graph;
     const LazyNumaReplicatedSystemWide<Eval::NNUE::Networks>& networks;
 
     // Used by NNUE
