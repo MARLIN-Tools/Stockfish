@@ -25,6 +25,7 @@
 #include "bitboard.h"
 #include "misc.h"
 #include "position.h"
+#include "tune.h"
 
 namespace Stockfish {
 
@@ -56,6 +57,24 @@ enum Stages {
     QCAPTURE
 };
 
+int MoveRankMainHist    = 129;
+int MoveRankPawnHist    = 119;
+int MoveRankCont0       = 128;
+int MoveRankCont1       = 96;
+int MoveRankCont2       = 64;
+int MoveRankCont3       = 48;
+int MoveRankCont5       = 32;
+int MoveRankAgreement   = 1176;
+int MoveRankCheckBonus  = 16384;
+int MoveRankEscapeThreat = 28;
+int MoveRankEnterThreat = 24;
+int MoveRankLowPly      = 10;
+
+TUNE(SetRange(0, 256), MoveRankMainHist, MoveRankPawnHist, MoveRankCont0, MoveRankCont1,
+     MoveRankCont2, MoveRankCont3, MoveRankCont5);
+TUNE(SetRange(0, 4096), MoveRankAgreement);
+TUNE(SetRange(0, 32768), MoveRankCheckBonus);
+TUNE(SetRange(0, 64), MoveRankEscapeThreat, MoveRankEnterThreat, MoveRankLowPly);
 
 // Sort moves in descending order up to and including a given limit.
 // The order of moves smaller than the limit is left unspecified.
@@ -157,26 +176,43 @@ ExtMove* MovePicker::score(const MoveList<Type>& ml) {
 
         else if constexpr (Type == QUIETS)
         {
-            // histories
-            m.value = 2 * (*mainHistory)[us][m.raw()];
-            m.value += 2 * sharedHistory->pawn_entry(pos)[pc][to];
-            m.value += (*continuationHistory[0])[pc][to];
-            m.value += (*continuationHistory[1])[pc][to];
-            m.value += (*continuationHistory[2])[pc][to];
-            m.value += (*continuationHistory[3])[pc][to];
-            m.value += (*continuationHistory[5])[pc][to];
+            const int mainHist = (*mainHistory)[us][m.raw()];
+            const int pawnHist = sharedHistory->pawn_entry(pos)[pc][to];
+            const int cont0    = (*continuationHistory[0])[pc][to];
+            const int cont1    = (*continuationHistory[1])[pc][to];
+            const int cont2    = (*continuationHistory[2])[pc][to];
+            const int cont3    = (*continuationHistory[3])[pc][to];
+            const int cont5    = (*continuationHistory[5])[pc][to];
+
+            // A cheap linear move-ranking model over the existing global history
+            // properties. The consistency term rewards moves that are supported by
+            // several independent histories without introducing nonlinear runtime cost.
+            const int positiveAgreement = (mainHist > 0) + (pawnHist > 0) + (cont0 > 0)
+                                        + (cont1 > 0) + (cont2 > 0) + (cont3 > 0)
+                                        + (cont5 > 0);
+            const int negativeAgreement = (mainHist < 0) + (pawnHist < 0) + (cont0 < 0)
+                                        + (cont1 < 0) + (cont2 < 0) + (cont3 < 0)
+                                        + (cont5 < 0);
+
+            m.value = (MoveRankMainHist * mainHist + MoveRankPawnHist * pawnHist
+                       + MoveRankCont0 * cont0 + MoveRankCont1 * cont1
+                       + MoveRankCont2 * cont2 + MoveRankCont3 * cont3
+                       + MoveRankCont5 * cont5)
+                    / 64;
+            m.value += MoveRankAgreement * (positiveAgreement - negativeAgreement);
 
             // bonus for checks
-            m.value += (bool(pos.check_squares(pt) & to) && pos.see_ge(m, -75)) * 16384;
+            m.value += (bool(pos.check_squares(pt) & to) && pos.see_ge(m, -75))
+                     * MoveRankCheckBonus;
 
             // penalty for moving to a square threatened by a lesser piece
             // or bonus for escaping an attack by a lesser piece.
-            int v = 20 * (bool(threatByLesser[pt] & from) - bool(threatByLesser[pt] & to));
-            m.value += PieceValue[pt] * v;
+            m.value += PieceValue[pt] * (MoveRankEscapeThreat * bool(threatByLesser[pt] & from)
+                                         - MoveRankEnterThreat * bool(threatByLesser[pt] & to));
 
 
             if (ply < LOW_PLY_HISTORY_SIZE)
-                m.value += 8 * (*lowPlyHistory)[ply][m.raw()] / (1 + ply);
+                m.value += MoveRankLowPly * (*lowPlyHistory)[ply][m.raw()] / (1 + ply);
         }
 
         else  // Type == EVASIONS
