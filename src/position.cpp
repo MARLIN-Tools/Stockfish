@@ -43,6 +43,34 @@ using std::string;
 
 namespace Stockfish {
 
+namespace {
+
+int threat_weight(Piece pc) {
+    assert(pc != NO_PIECE);
+
+    switch (type_of(pc))
+    {
+    case PAWN :
+        return 1;
+    case KNIGHT :
+    case BISHOP :
+        return 3;
+    case ROOK :
+        return 5;
+    case QUEEN :
+        return 9;
+    default :
+        return 0;
+    }
+}
+
+bool is_counted_threat(Piece attacker, Piece victim) {
+    return attacker != NO_PIECE && victim != NO_PIECE && type_of(victim) != KING
+        && color_of(attacker) != color_of(victim);
+}
+
+}  // namespace
+
 namespace Zobrist {
 
 Key psq[PIECE_NB][SQUARE_NB];
@@ -498,6 +526,7 @@ void Position::set_state() const {
     st->checkersBB = attackers_to(square<KING>(sideToMove)) & pieces(~sideToMove);
 
     set_check_info();
+    set_threat_pressure();
 
     for (Bitboard b = pieces(); b;)
     {
@@ -530,6 +559,42 @@ void Position::set_state() const {
 
     st->key ^= Zobrist::castling[st->castlingRights];
     st->materialKey = compute_material_key();
+}
+
+void Position::set_threat_pressure() const {
+
+    st->threatPressure[WHITE] = st->threatPressure[BLACK] = 0;
+
+    for (Bitboard targets = pieces() ^ pieces(KING); targets;)
+    {
+        Square targetSq = pop_lsb(targets);
+        Piece  victim   = piece_on(targetSq);
+
+        Bitboard attackers = attackers_to(targetSq) & pieces(~color_of(victim));
+        while (attackers)
+        {
+            Square attackerSq = pop_lsb(attackers);
+            Piece  attacker   = piece_on(attackerSq);
+
+            if (is_counted_threat(attacker, victim))
+                st->threatPressure[color_of(attacker)] += threat_weight(victim);
+        }
+    }
+}
+
+void Position::update_threat_pressure(const DirtyThreats& dts) const {
+
+    for (const DirtyThreat& dt : dts.list)
+    {
+        Piece attacker = dt.pc();
+        Piece victim   = dt.threatened_pc();
+
+        if (!is_counted_threat(attacker, victim))
+            continue;
+
+        st->threatPressure[color_of(attacker)] += dt.add() ? threat_weight(victim)
+                                                           : -threat_weight(victim);
+    }
 }
 
 Key Position::compute_material_key() const {
@@ -1051,6 +1116,7 @@ void Position::do_move(Move                      m,
 
     // Set capture piece
     st->capturedPiece = captured;
+    update_threat_pressure(dts);
 
     // Calculate checkers bitboard (if move gives check)
     st->checkersBB = givesCheck ? attackers_to(square<KING>(them)) & pieces(us) : 0;

@@ -52,6 +52,7 @@ struct StateInfo {
     int    castlingRights;
     int    rule50;
     int    pliesFromNull;
+    int    threatPressure[COLOR_NB];
     Square epSquare;
 
     // Not copied when making a move (will be recomputed anyhow)
@@ -175,6 +176,8 @@ class Position {
     int   rule50_count() const;
     Value non_pawn_material(Color c) const;
     Value non_pawn_material() const;
+    int   threat_pressure(Color c) const;
+    int   threat_balance(Color c) const;
 
     // Position consistency check, for debugging
     bool pos_is_ok() const;
@@ -193,8 +196,10 @@ class Position {
     Key  compute_material_key() const;
     void set_state() const;
     void set_check_info() const;
+    void set_threat_pressure() const;
 
     // Other helpers
+    void update_threat_pressure(const DirtyThreats& dts) const;
     template<bool PutPiece, bool ComputeRay = true>
     void update_piece_threats(Piece               pc,
                               Square              s,
@@ -331,6 +336,12 @@ inline Value Position::non_pawn_material(Color c) const { return st->nonPawnMate
 
 inline Value Position::non_pawn_material() const {
     return non_pawn_material(WHITE) + non_pawn_material(BLACK);
+}
+
+inline int Position::threat_pressure(Color c) const { return st->threatPressure[c]; }
+
+inline int Position::threat_balance(Color c) const {
+    return threat_pressure(c) - threat_pressure(~c);
 }
 
 inline int Position::game_ply() const { return gamePly; }

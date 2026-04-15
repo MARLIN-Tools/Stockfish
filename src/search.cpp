@@ -765,6 +765,7 @@ Value Search::Worker::search(
     // for us than at the last ply.
     improving         = ss->staticEval > (ss - 2)->staticEval;
     opponentWorsening = ss->staticEval > -(ss - 1)->staticEval;
+    const int threatPressure = ss->inCheck ? 0 : std::min(32, std::abs(pos.threat_balance(us)));
 
     // Hindsight adjustment of reductions based on static evaluation difference.
     if (priorReduction >= 3 && !opponentWorsening)
@@ -900,14 +901,16 @@ Value Search::Worker::search(
                  + std::abs(correctionValue) / 180600;
         };
 
-        if (!ss->ttPv && depth < 15 && eval - futility_margin(depth) >= beta && eval >= beta
+        if (!ss->ttPv && depth < 15 && eval - futility_margin(depth) >= beta + 3 * threatPressure
+            && eval >= beta
             && (!ttData.move || ttCapture) && !is_loss(beta) && !is_win(eval))
             return (2 * beta + eval) / 3;
     }
 
     // Step 9. Null move search with verification search
-    if (cutNode && ss->staticEval >= beta - 16 * depth - 53 * improving + 378 && !excludedMove
-        && pos.non_pawn_material(us) && ss->ply >= nmpMinPly && !is_loss(beta))
+    if (cutNode
+        && ss->staticEval >= beta - 16 * depth - 53 * improving + 378 + 2 * threatPressure
+        && !excludedMove && pos.non_pawn_material(us) && ss->ply >= nmpMinPly && !is_loss(beta))
     {
         assert((ss - 1)->currentMove != Move::null());
 
@@ -1067,7 +1070,7 @@ moves_loop:  // When in check, search starts here
         if (!rootNode && pos.non_pawn_material(us) && !is_loss(bestValue))
         {
             // Skip quiet moves if movecount exceeds our threshold
-            if (moveCount >= (3 + depth * depth) / (2 - improving))
+            if (moveCount >= (3 + depth * depth) / (2 - improving) + threatPressure / 8)
                 mp.skip_quiet_moves();
 
             // Reduced depth of the next LMR search
@@ -1082,7 +1085,8 @@ moves_loop:  // When in check, search starts here
                 if (!givesCheck && lmrDepth < 7)
                 {
                     Value futilityValue = ss->staticEval + 218 + 223 * lmrDepth
-                                        + PieceValue[capturedPiece] + 131 * captHist / 1024;
+                                        + PieceValue[capturedPiece] + 131 * captHist / 1024
+                                        + 3 * threatPressure;
 
                     if (futilityValue <= alpha)
                         continue;
@@ -1090,7 +1094,7 @@ moves_loop:  // When in check, search starts here
 
                 // SEE based pruning for captures and checks
                 // Avoid pruning sacrifices of our last piece for stalemate
-                int margin = std::max(167 * depth + captHist * 34 / 1024, 0);
+                int margin = std::max(167 * depth + captHist * 34 / 1024 + 2 * threatPressure, 0);
                 if ((alpha >= VALUE_DRAW || pos.non_pawn_material(us) != PieceValue[movedPiece])
                     && !pos.see_ge(move, -margin))
                     continue;
@@ -1111,7 +1115,7 @@ moves_loop:  // When in check, search starts here
                 lmrDepth += history / 2995;
 
                 Value futilityValue = ss->staticEval + 42 + 151 * !bestMove + 120 * lmrDepth
-                                    + 86 * (ss->staticEval > alpha);
+                                    + 86 * (ss->staticEval > alpha) + 3 * threatPressure;
 
                 // Futility pruning: parent node
                 // (*Scaler): Generally, more frequent futility pruning
@@ -1127,7 +1131,7 @@ moves_loop:  // When in check, search starts here
                 lmrDepth = std::max(lmrDepth, 0);
 
                 // Prune moves with negative SEE
-                if (!pos.see_ge(move, -25 * lmrDepth * lmrDepth))
+                if (!pos.see_ge(move, -25 * lmrDepth * lmrDepth - 8 * threatPressure))
                     continue;
             }
         }
