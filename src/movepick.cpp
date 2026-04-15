@@ -56,6 +56,18 @@ enum Stages {
     QCAPTURE
 };
 
+constexpr int MoveRankMainHist     = 131;
+constexpr int MoveRankPawnHist     = 126;
+constexpr int MoveRankCont0        = 133;
+constexpr int MoveRankCont1        = 104;
+constexpr int MoveRankCont2        = 62;
+constexpr int MoveRankCont3        = 47;
+constexpr int MoveRankCont5        = 39;
+constexpr int MoveRankAgreement    = 1005;
+constexpr int MoveRankCheckBonus   = 16176;
+constexpr int MoveRankEscapeThreat = 28;
+constexpr int MoveRankEnterThreat  = 27;
+constexpr int MoveRankLowPly       = 11;
 
 // Sort moves in descending order up to and including a given limit.
 // The order of moves smaller than the limit is left unspecified.
@@ -157,26 +169,40 @@ ExtMove* MovePicker::score(const MoveList<Type>& ml) {
 
         else if constexpr (Type == QUIETS)
         {
-            // histories
-            m.value = 2 * (*mainHistory)[us][m.raw()];
-            m.value += 2 * sharedHistory->pawn_entry(pos)[pc][to];
-            m.value += (*continuationHistory[0])[pc][to];
-            m.value += (*continuationHistory[1])[pc][to];
-            m.value += (*continuationHistory[2])[pc][to];
-            m.value += (*continuationHistory[3])[pc][to];
-            m.value += (*continuationHistory[5])[pc][to];
+            const int mainHist = (*mainHistory)[us][m.raw()];
+            const int pawnHist = sharedHistory->pawn_entry(pos)[pc][to];
+            const int cont0    = (*continuationHistory[0])[pc][to];
+            const int cont1    = (*continuationHistory[1])[pc][to];
+            const int cont2    = (*continuationHistory[2])[pc][to];
+            const int cont3    = (*continuationHistory[3])[pc][to];
+            const int cont5    = (*continuationHistory[5])[pc][to];
+
+            const int positiveAgreement = (mainHist > 0) + (pawnHist > 0) + (cont0 > 0)
+                                        + (cont1 > 0) + (cont2 > 0) + (cont3 > 0)
+                                        + (cont5 > 0);
+            const int negativeAgreement = (mainHist < 0) + (pawnHist < 0) + (cont0 < 0)
+                                        + (cont1 < 0) + (cont2 < 0) + (cont3 < 0)
+                                        + (cont5 < 0);
+
+            m.value = (MoveRankMainHist * mainHist + MoveRankPawnHist * pawnHist
+                       + MoveRankCont0 * cont0 + MoveRankCont1 * cont1
+                       + MoveRankCont2 * cont2 + MoveRankCont3 * cont3
+                       + MoveRankCont5 * cont5)
+                    / 64;
+            m.value += MoveRankAgreement * (positiveAgreement - negativeAgreement);
 
             // bonus for checks
-            m.value += (bool(pos.check_squares(pt) & to) && pos.see_ge(m, -75)) * 16384;
+            m.value += (bool(pos.check_squares(pt) & to) && pos.see_ge(m, -75))
+                     * MoveRankCheckBonus;
 
             // penalty for moving to a square threatened by a lesser piece
             // or bonus for escaping an attack by a lesser piece.
-            int v = 20 * (bool(threatByLesser[pt] & from) - bool(threatByLesser[pt] & to));
-            m.value += PieceValue[pt] * v;
+            m.value += PieceValue[pt] * (MoveRankEscapeThreat * bool(threatByLesser[pt] & from)
+                                         - MoveRankEnterThreat * bool(threatByLesser[pt] & to));
 
 
             if (ply < LOW_PLY_HISTORY_SIZE)
-                m.value += 8 * (*lowPlyHistory)[ply][m.raw()] / (1 + ply);
+                m.value += MoveRankLowPly * (*lowPlyHistory)[ply][m.raw()] / (1 + ply);
         }
 
         else  // Type == EVASIONS
