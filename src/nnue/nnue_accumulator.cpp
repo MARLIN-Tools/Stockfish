@@ -43,7 +43,7 @@ template<IndexType TransformedFeatureDimensions>
 void double_inc_update(Color                                                   perspective,
                        const FeatureTransformer<TransformedFeatureDimensions>& featureTransformer,
                        const Square                                            ksq,
-                       const AccumulatorState<PSQFeatureSet>&                  middle_state,
+                       AccumulatorState<PSQFeatureSet>&                        middle_state,
                        AccumulatorState<PSQFeatureSet>&                        target_state,
                        const AccumulatorState<PSQFeatureSet>&                  computed);
 
@@ -51,7 +51,7 @@ template<IndexType TransformedFeatureDimensions>
 void double_inc_update(Color                                                   perspective,
                        const FeatureTransformer<TransformedFeatureDimensions>& featureTransformer,
                        const Square                                            ksq,
-                       const AccumulatorState<ThreatFeatureSet>&               middle_state,
+                       AccumulatorState<ThreatFeatureSet>&                     middle_state,
                        AccumulatorState<ThreatFeatureSet>&                     target_state,
                        const AccumulatorState<ThreatFeatureSet>&               computed,
                        const DirtyPiece&                                       dp2);
@@ -145,13 +145,14 @@ void AccumulatorStack::evaluate(const Position&                       pos,
     constexpr bool UseThreats = (Dimensions == TransformedFeatureDimensionsBig);
 
     evaluate_side<PSQFeatureSet>(WHITE, pos, featureTransformer, cache);
+
+    if (UseThreats)
+        evaluate_side<ThreatFeatureSet>(WHITE, pos, featureTransformer, cache);
+
     evaluate_side<PSQFeatureSet>(BLACK, pos, featureTransformer, cache);
 
     if (UseThreats)
-    {
-        evaluate_side<ThreatFeatureSet>(WHITE, pos, featureTransformer, cache);
         evaluate_side<ThreatFeatureSet>(BLACK, pos, featureTransformer, cache);
-    }
 }
 
 template<typename FeatureSet, IndexType Dimensions>
@@ -378,8 +379,8 @@ struct AccumulatorUpdateContext {
     #ifdef USE_NEON
                 for (IndexType k = 0; k < Tiling::NumRegs; k += 2)
                 {
-                    acc[k]     = vsubw_s8(acc[k], vget_low_s8(column[k / 2]));
-                    acc[k + 1] = vsubw_high_s8(acc[k + 1], column[k / 2]);
+                    acc[k]     = vec_sub_16(acc[k], vmovl_s8(vget_low_s8(column[k / 2])));
+                    acc[k + 1] = vec_sub_16(acc[k + 1], vmovl_high_s8(column[k / 2]));
                 }
     #else
                 for (IndexType k = 0; k < Tiling::NumRegs; ++k)
@@ -396,8 +397,8 @@ struct AccumulatorUpdateContext {
     #ifdef USE_NEON
                 for (IndexType k = 0; k < Tiling::NumRegs; k += 2)
                 {
-                    acc[k]     = vaddw_s8(acc[k], vget_low_s8(column[k / 2]));
-                    acc[k + 1] = vaddw_high_s8(acc[k + 1], column[k / 2]);
+                    acc[k]     = vec_add_16(acc[k], vmovl_s8(vget_low_s8(column[k / 2])));
+                    acc[k + 1] = vec_add_16(acc[k + 1], vmovl_high_s8(column[k / 2]));
                 }
     #else
                 for (IndexType k = 0; k < Tiling::NumRegs; ++k)
@@ -491,7 +492,7 @@ template<IndexType TransformedFeatureDimensions>
 void double_inc_update(Color                                                   perspective,
                        const FeatureTransformer<TransformedFeatureDimensions>& featureTransformer,
                        const Square                                            ksq,
-                       const AccumulatorState<PSQFeatureSet>&                  middle_state,
+                       AccumulatorState<PSQFeatureSet>&                        middle_state,
                        AccumulatorState<PSQFeatureSet>&                        target_state,
                        const AccumulatorState<PSQFeatureSet>&                  computed) {
 
@@ -506,23 +507,19 @@ void double_inc_update(Color                                                   p
     assert(added.size() < 2);
     PSQFeatureSet::append_changed_indices(perspective, ksq, target_state.diff, removed, added);
 
-    [[maybe_unused]] const int addedSize   = added.ssize();
-    [[maybe_unused]] const int removedSize = removed.ssize();
-
-    assert(addedSize == 1);
-    assert(removedSize == 2 || removedSize == 3);
+    assert(added.size() == 1);
+    assert(removed.size() == 2 || removed.size() == 3);
 
     // Workaround compiler warning for uninitialized variables, replicated on
     // profile builds on windows with gcc 14.2.0.
-    // Also helps with optimizations on some compilers.
-
-    sf_assume(addedSize == 1);
-    sf_assume(removedSize == 2 || removedSize == 3);
+    // TODO remove once unneeded
+    sf_assume(added.size() == 1);
+    sf_assume(removed.size() == 2 || removed.size() == 3);
 
     auto updateContext =
       make_accumulator_update_context(perspective, featureTransformer, computed, target_state);
 
-    if (removedSize == 2)
+    if (removed.size() == 2)
     {
         updateContext.template apply<Add, Sub, Sub>(added[0], removed[0], removed[1]);
     }
@@ -539,7 +536,7 @@ template<IndexType TransformedFeatureDimensions>
 void double_inc_update(Color                                                   perspective,
                        const FeatureTransformer<TransformedFeatureDimensions>& featureTransformer,
                        const Square                                            ksq,
-                       const AccumulatorState<ThreatFeatureSet>&               middle_state,
+                       AccumulatorState<ThreatFeatureSet>&                     middle_state,
                        AccumulatorState<ThreatFeatureSet>&                     target_state,
                        const AccumulatorState<ThreatFeatureSet>&               computed,
                        const DirtyPiece&                                       dp2) {
@@ -553,12 +550,10 @@ void double_inc_update(Color                                                   p
     fusedData.dp2removed = dp2.remove_sq;
 
     ThreatFeatureSet::IndexList removed, added;
-    const auto*                 pfBase   = &featureTransformer.threatWeights[0];
-    auto                        pfStride = static_cast<IndexType>(TransformedFeatureDimensions);
     ThreatFeatureSet::append_changed_indices(perspective, ksq, middle_state.diff, removed, added,
-                                             &fusedData, true, pfBase, pfStride);
+                                             &fusedData, true);
     ThreatFeatureSet::append_changed_indices(perspective, ksq, target_state.diff, removed, added,
-                                             &fusedData, false, pfBase, pfStride);
+                                             &fusedData, false);
 
     auto updateContext =
       make_accumulator_update_context(perspective, featureTransformer, computed, target_state);
@@ -586,24 +581,10 @@ void update_accumulator_incremental(
     // In this case, the maximum size of both feature addition and removal
     // is 2, since we are incrementally updating one move at a time.
     typename FeatureSet::IndexList removed, added;
-    if constexpr (std::is_same_v<FeatureSet, ThreatFeatureSet>)
-    {
-        const auto* pfBase   = &featureTransformer.threatWeights[0];
-        auto        pfStride = static_cast<IndexType>(TransformedFeatureDimensions);
-        if constexpr (Forward)
-            FeatureSet::append_changed_indices(perspective, ksq, target_state.diff, removed, added,
-                                               nullptr, false, pfBase, pfStride);
-        else
-            FeatureSet::append_changed_indices(perspective, ksq, computed.diff, added, removed,
-                                               nullptr, false, pfBase, pfStride);
-    }
+    if constexpr (Forward)
+        FeatureSet::append_changed_indices(perspective, ksq, target_state.diff, removed, added);
     else
-    {
-        if constexpr (Forward)
-            FeatureSet::append_changed_indices(perspective, ksq, target_state.diff, removed, added);
-        else
-            FeatureSet::append_changed_indices(perspective, ksq, computed.diff, added, removed);
-    }
+        FeatureSet::append_changed_indices(perspective, ksq, computed.diff, added, removed);
 
     auto updateContext =
       make_accumulator_update_context(perspective, featureTransformer, computed, target_state);
@@ -612,41 +593,35 @@ void update_accumulator_incremental(
         updateContext.apply(added, removed);
     else
     {
-        [[maybe_unused]] const int addedSize   = added.ssize();
-        [[maybe_unused]] const int removedSize = removed.ssize();
-
-        assert(addedSize == 1 || addedSize == 2);
-        assert(removedSize == 1 || removedSize == 2);
-        assert((Forward && addedSize <= removedSize) || (!Forward && addedSize >= removedSize));
+        assert(added.size() == 1 || added.size() == 2);
+        assert(removed.size() == 1 || removed.size() == 2);
+        assert((Forward && added.size() <= removed.size())
+               || (!Forward && added.size() >= removed.size()));
 
         // Workaround compiler warning for uninitialized variables, replicated
         // on profile builds on windows with gcc 14.2.0.
-        // Also helps with optimizations on some compilers.
+        // TODO remove once unneeded
+        sf_assume(added.size() == 1 || added.size() == 2);
+        sf_assume(removed.size() == 1 || removed.size() == 2);
 
-        sf_assume(addedSize == 1 || addedSize == 2);
-        sf_assume(removedSize == 1 || removedSize == 2);
-
-        if (!(removedSize == 1 || removedSize == 2) || !(addedSize == 1 || addedSize == 2))
-            sf_unreachable();
-
-        if ((Forward && removedSize == 1) || (!Forward && addedSize == 1))
+        if ((Forward && removed.size() == 1) || (!Forward && added.size() == 1))
         {
-            assert(addedSize == 1 && removedSize == 1);
+            assert(added.size() == 1 && removed.size() == 1);
             updateContext.template apply<Add, Sub>(added[0], removed[0]);
         }
-        else if (Forward && addedSize == 1)
+        else if (Forward && added.size() == 1)
         {
-            assert(removedSize == 2);
+            assert(removed.size() == 2);
             updateContext.template apply<Add, Sub, Sub>(added[0], removed[0], removed[1]);
         }
-        else if (!Forward && removedSize == 1)
+        else if (!Forward && removed.size() == 1)
         {
-            assert(addedSize == 2);
+            assert(added.size() == 2);
             updateContext.template apply<Add, Add, Sub>(added[0], added[1], removed[0]);
         }
         else
         {
-            assert(addedSize == 2 && removedSize == 2);
+            assert(added.size() == 2 && removed.size() == 2);
             updateContext.template apply<Add, Add, Sub, Sub>(added[0], added[1], removed[0],
                                                              removed[1]);
         }
@@ -657,7 +632,7 @@ void update_accumulator_incremental(
 
 Bitboard get_changed_pieces(const std::array<Piece, SQUARE_NB>& oldPieces,
                             const std::array<Piece, SQUARE_NB>& newPieces) {
-#if defined(USE_AVX2)
+#if defined(USE_AVX512) || defined(USE_AVX2)
     static_assert(sizeof(Piece) == 1);
     Bitboard sameBB = 0;
 
@@ -709,10 +684,6 @@ void update_accumulator_refresh_cache(Color                                 pers
     Bitboard       removedBB = changedBB & entry.pieceBB;
     Bitboard       addedBB   = changedBB & pos.pieces();
 
-#if defined(USE_AVX512ICL)
-    PSQFeatureSet::write_indices(entry.pieces, pos.piece_array(), removedBB, addedBB, perspective,
-                                 ksq, removed, added);
-#else
     while (removedBB)
     {
         Square sq = pop_lsb(removedBB);
@@ -723,7 +694,6 @@ void update_accumulator_refresh_cache(Color                                 pers
         Square sq = pop_lsb(addedBB);
         added.push_back(PSQFeatureSet::make_index(perspective, sq, pos.piece_on(sq), ksq));
     }
-#endif
 
     entry.pieceBB = pos.pieces();
     entry.pieces  = pos.piece_array();
@@ -746,7 +716,20 @@ void update_accumulator_refresh_cache(Color                                 pers
         for (IndexType k = 0; k < Tiling::NumRegs; ++k)
             acc[k] = entryTile[k];
 
-        for (int i = 0; i < removed.ssize(); ++i)
+        int i = 0;
+        for (; i < std::min(removed.ssize(), added.ssize()); ++i)
+        {
+            size_t       indexR  = removed[i];
+            const size_t offsetR = Dimensions * indexR;
+            auto*        columnR = reinterpret_cast<const vec_t*>(&weights[offsetR]);
+            size_t       indexA  = added[i];
+            const size_t offsetA = Dimensions * indexA;
+            auto*        columnA = reinterpret_cast<const vec_t*>(&weights[offsetA]);
+
+            for (IndexType k = 0; k < Tiling::NumRegs; ++k)
+                acc[k] = fused<Vec16Wrapper, Add, Sub>(acc[k], columnA[k], columnR[k]);
+        }
+        for (; i < removed.ssize(); ++i)
         {
             size_t       index  = removed[i];
             const size_t offset = Dimensions * index;
@@ -755,7 +738,7 @@ void update_accumulator_refresh_cache(Color                                 pers
             for (IndexType k = 0; k < Tiling::NumRegs; ++k)
                 acc[k] = vec_sub_16(acc[k], column[k]);
         }
-        for (int i = 0; i < added.ssize(); ++i)
+        for (; i < added.ssize(); ++i)
         {
             size_t       index  = added[i];
             const size_t offset = Dimensions * index;
@@ -876,8 +859,8 @@ void update_threats_accumulator_full(Color                                 persp
     #ifdef USE_NEON
             for (IndexType k = 0; k < Tiling::NumRegs; k += 2)
             {
-                acc[k]     = vaddw_s8(acc[k], vget_low_s8(column[k / 2]));
-                acc[k + 1] = vaddw_high_s8(acc[k + 1], column[k / 2]);
+                acc[k]     = vec_add_16(acc[k], vmovl_s8(vget_low_s8(column[k / 2])));
+                acc[k + 1] = vec_add_16(acc[k + 1], vmovl_high_s8(column[k / 2]));
             }
     #else
             for (IndexType k = 0; k < Tiling::NumRegs; ++k)

@@ -80,7 +80,7 @@ HEADERS = benchmark.h bitboard.h evaluate.h misc.h movegen.h movepick.h history.
 		nnue/layers/clipped_relu.h nnue/layers/sqr_clipped_relu.h nnue/nnue_accumulator.h \
 		nnue/nnue_architecture.h nnue/nnue_common.h nnue/nnue_feature_transformer.h nnue/simd.h \
 		position.h search.h syzygy/tbprobe.h thread.h thread_win32_osx.h timeman.h \
-		tt.h tune.h types.h uci.h ucioption.h perft.h nnue/network.h engine.h score.h numa.h memory.h shm.h shm_linux.h
+		tt.h tune.h types.h uci.h ucioption.h perft.h nnue/network.h engine.h score.h numa.h memory.h
 
 OBJS = $(notdir $(SRCS:.cpp=.o))
 
@@ -143,7 +143,7 @@ endif
 # explicitly check for the list of supported architectures (as listed with make help),
 # the user can override with `make ARCH=x86-64-avx512icl SUPPORTED_ARCH=true`
 ifeq ($(ARCH), $(filter $(ARCH), \
-                 x86-64-universal x86-64-avx512icl x86-64-vnni512 x86-64-avx512 x86-64-avxvnni \
+                 x86-64-avx512icl x86-64-vnni512 x86-64-avx512 x86-64-avxvnni \
                  x86-64-bmi2 x86-64-avx2 x86-64-sse41-popcnt x86-64-modern x86-64-ssse3 x86-64-sse3-popcnt \
                  x86-64 x86-32-sse41-popcnt x86-32-sse2 x86-32 ppc-64 ppc-64-altivec ppc-64-vsx ppc-32 e2k \
                  armv7 armv7-neon armv8 armv8-dotprod apple-silicon general-64 general-32 riscv64 \
@@ -152,13 +152,6 @@ ifeq ($(ARCH), $(filter $(ARCH), \
 else
    SUPPORTED_ARCH=false
 endif
-
-ifeq ($(ARCH), x86-64-universal)
-   UNIVERSAL_BUILD=true
-else
-   UNIVERSAL_BUILD=false
-endif
-
 
 optimize = yes
 debug = no
@@ -522,7 +515,7 @@ ifeq ($(COMP),clang)
 	endif
 
 	CXXFLAGS += -pedantic -Wextra -Wshadow -Wmissing-prototypes \
-	            -Wconditional-uninitialized -flax-vector-conversions=none
+	            -Wconditional-uninitialized
 
 	ifeq ($(filter $(KERNEL),Darwin OpenBSD FreeBSD),)
 	ifeq ($(target_windows),)
@@ -630,7 +623,7 @@ ifeq ($(COMP),gcc)
 		profile_make = clang-profile-make
 		profile_use = clang-profile-use
 	else
-		CXXFLAGS += -Wstack-usage=128000 -fno-ipa-cp-clone
+		CXXFLAGS += -Wstack-usage=128000
 	endif
 endif
 
@@ -840,28 +833,19 @@ ifeq ($(pext),yes)
 	endif
 endif
 
-### 3.8.1 Try to include git info for versioning and avoid recompiles if nothing changes
-BUILD_SHA_FILE  := .build_sha.txt
-BUILD_DATE_FILE := .build_date.txt
-GIT_SHA         := $(shell git rev-parse HEAD 2>/dev/null | cut -c 1-8 || true)
-GIT_DATE        := $(shell git show -s --date=format:%Y%m%d --format=%cd HEAD 2>/dev/null || true)
-COMPILER_DATE   := $(shell date +%Y%m%d 2>/dev/null)
-
-BUILD_DATE      := $(if $(GIT_DATE),$(GIT_DATE),$(COMPILER_DATE))
-
-define cache_file_contents
-$(shell \
-	if [ ! -f "$(1)" ] || [ "$$(cat "$(1)" 2>/dev/null)" != "$(2)" ]; then \
-		printf '%s\n' "$(2)" > "$(1)"; \
-	fi)
-endef
-
-ifneq ($(filter $(MAKECMDGOALS),help strip install clean net objclean profileclean format config-sanity),$(MAKECMDGOALS))
-_ := $(call cache_file_contents,$(BUILD_SHA_FILE),$(GIT_SHA))
-_ := $(call cache_file_contents,$(BUILD_DATE_FILE),$(BUILD_DATE))
+### 3.8.1 Try to include git commit sha for versioning
+GIT_SHA := $(shell git rev-parse HEAD 2>/dev/null | cut -c 1-8)
+ifneq ($(GIT_SHA), )
+	CXXFLAGS += -DGIT_SHA=$(GIT_SHA)
 endif
 
-### 3.8.2 Try to include architecture
+### 3.8.2 Try to include git commit date for versioning
+GIT_DATE := $(shell git show -s --date=format:'%Y%m%d' --format=%cd HEAD 2>/dev/null)
+ifneq ($(GIT_DATE), )
+	CXXFLAGS += -DGIT_DATE=$(GIT_DATE)
+endif
+
+### 3.8.3 Try to include architecture
 ifneq ($(ARCH), )
 	CXXFLAGS += -DARCH=$(ARCH)
 endif
@@ -870,40 +854,27 @@ endif
 ### This is a mix of compile and link time options because the lto link phase
 ### needs access to the optimization flags.
 ifeq ($(optimize),yes)
-ifeq ($(debug),no)
-	ifneq ($(KERNEL),Darwin)
-		LLD_BIN := $(shell command -v ld.lld 2>/dev/null)
-		ifeq ($(LLD_BIN),)
-			LLD_BIN := $(shell command -v lld 2>/dev/null)
-		endif
-		ifneq ($(LLD_BIN),)
-			ifeq ($(comp),clang)
-				LDFLAGS += -fuse-ld=lld
-			else ifeq ($(comp),gcc)
-				ifneq ($(gccisclang),)
-					LDFLAGS += -fuse-ld=lld
-				endif
-			endif
-		endif
-	endif
-
+ifeq ($(debug), no)
 	ifeq ($(comp),$(filter $(comp),clang icx))
 		CXXFLAGS += -flto=full
 		ifeq ($(comp),icx)
 			CXXFLAGS += -fwhole-program-vtables
+                endif
+		ifeq ($(target_windows),yes)
+			CXXFLAGS += -fuse-ld=lld
 		endif
 		LDFLAGS += $(CXXFLAGS)
 
 # GCC and CLANG use different methods for parallelizing LTO and CLANG pretends to be
 # GCC on some systems.
 	else ifeq ($(comp),gcc)
-		ifeq ($(gccisclang),)
-			CXXFLAGS += -flto -flto-partition=one
-			LDFLAGS += $(CXXFLAGS) -flto=jobserver
-		else
-			CXXFLAGS += -flto=full
-			LDFLAGS += $(CXXFLAGS)
-		endif
+	ifeq ($(gccisclang),)
+		CXXFLAGS += -flto -flto-partition=one
+		LDFLAGS += $(CXXFLAGS) -flto=jobserver
+	else
+		CXXFLAGS += -flto=full
+		LDFLAGS += $(CXXFLAGS)
+	endif
 
 # To use LTO and static linking on Windows,
 # the tool chain requires gcc version 10.1 or later.
@@ -919,13 +890,6 @@ endif
 ifeq ($(OS), Android)
 	CXXFLAGS += -fPIE
 	LDFLAGS += -fPIE -pie
-endif
-
-### 3.11 Inline settings
-ifeq ($(optimize), yes)
-	ifeq ($(comp), clang)
-		CXXFLAGS += -Xclang -mllvm -Xclang -inline-threshold=500
-	endif
 endif
 
 ### ==========================================================================
@@ -951,7 +915,6 @@ help:
 	echo "Supported archs:" && \
 	echo "" && \
 	echo "native                  > select the best architecture for the host processor (default)" && \
-	echo "x86-64-universal        > x86 64-bit with automatic runtime selection of the best architecture" && \
 	echo "x86-64-avx512icl        > x86 64-bit with minimum avx512 support of Intel Ice Lake or AMD Zen 4" && \
 	echo "x86-64-vnni512          > x86 64-bit with vnni 512bit support" && \
 	echo "x86-64-avx512           > x86 64-bit with avx512 support" && \
@@ -993,15 +956,14 @@ help:
 	echo "" && \
 	echo "Simple examples. If you don't know what to do, you likely want to run one of: " && \
 	echo "" && \
-	echo "make -j profile-build ARCH=native         # a fast compile for local use" && \
-	echo "make -j profile-build ARCH=x86-64-avx2    # A portable compile for most x86-64 systems " && \
-	echo "make -j profile-build ARCH=x86-64         # A portable compile for x86-64 systems " && \
+	echo "make -j profile-build ARCH=x86-64-avx2    # typically a fast compile for common systems " && \
+	echo "make -j profile-build ARCH=x86-64-sse41-popcnt  # A more portable compile for 64-bit systems " && \
+	echo "make -j profile-build ARCH=x86-64         # A portable compile for 64-bit systems " && \
 	echo "" && \
 	echo "Advanced examples, for experienced users: " && \
 	echo "" && \
 	echo "make -j profile-build ARCH=x86-64-avxvnni" && \
-	echo "make -j profile-build ARCH=x86-64-avxvnni COMP=gcc CXX=g++-12.0" && \
-	echo 'make -j profile-build ARCH=x86-64-universal RUN_PREFIX="/path/to/sde -future --" CXX=g++-15' && \
+	echo "make -j profile-build ARCH=x86-64-avxvnni COMP=gcc COMPCXX=g++-12.0" && \
 	echo "make -j build ARCH=x86-64-ssse3 COMP=clang" && \
 	echo ""
 ifneq ($(SUPPORTED_ARCH), true)
@@ -1020,7 +982,6 @@ endif
 analyze: net config-sanity objclean
 	$(MAKE) -k ARCH=$(ARCH) COMP=$(COMP) $(OBJS)
 
-ifeq ($(UNIVERSAL_BUILD),false)
 build: net config-sanity
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) all
 
@@ -1039,27 +1000,6 @@ profile-build: net config-sanity objclean profileclean
 	@echo ""
 	@echo "Step 4/4. Deleting profile data ..."
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) profileclean
-endif
-
-universal-object-pgo: objclean profileclean universalclean
-	@echo ""
-	@echo "Step 1/4. Building instrumented executable ..."
-	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) $(profile_make)
-	@echo ""
-	@echo "Step 2/4. Running benchmark for pgo-build ..."
-	$(PGOBENCH) > PGOBENCH.out 2>&1
-	tail -n 4 PGOBENCH.out
-	@echo ""
-	@echo "Step 3/4. Building optimized object files ..."
-	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) objclean
-	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) ENV_LDFLAGS='-save-temps $(NNUE_EMBED_OBJ)' $(profile_use)
-	@echo ""
-	@echo "Step 4/4. Extracting LTO-optimized relocatable object ..."
-	cp $(basename $(EXE)).ltrans0.ltrans.o stockfish.o
-
-universal-object-nopgo: objclean universalclean
-	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) ENV_LDFLAGS='-save-temps $(NNUE_EMBED_OBJ)' all
-	cp $(basename $(EXE)).ltrans0.ltrans.o stockfish.o
 
 strip:
 	$(STRIP) $(EXE)
@@ -1070,12 +1010,12 @@ install:
 	$(STRIP) $(BINDIR)/$(EXE)
 
 # clean all
-clean: objclean profileclean universalclean
+clean: objclean profileclean
 	@rm -f .depend *~ core
 
 # clean binaries and objects
 objclean:
-	@rm -f stockfish stockfish.exe *.o ./syzygy/*.o ./nnue/*.o ./nnue/features/*.o $(BUILD_SHA_FILE) $(BUILD_DATE_FILE)
+	@rm -f stockfish stockfish.exe *.o ./syzygy/*.o ./nnue/*.o ./nnue/features/*.o
 
 # clean auxiliary profiling files
 profileclean:
@@ -1086,9 +1026,6 @@ profileclean:
 	@rm -f stockfish.*lt*
 	@rm -f stockfish.res
 	@rm -f ./-lstdc++.res
-
-universalclean:
-	@rm -rf $(TEMP_DIR)
 
 # evaluation network (nnue)
 net:
@@ -1174,11 +1111,9 @@ config-sanity: net
 $(EXE): $(OBJS)
 	+$(CXX) -o $@ $(OBJS) $(LDFLAGS)
 
-%.o: %.cpp
-	$(strip $(CXX) $(CPPFLAGS) $(CXXFLAGS)) -c -o $@ $<
-
-misc.o: misc.cpp $(BUILD_SHA_FILE) $(BUILD_DATE_FILE)
-	$(strip $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(if $(GIT_SHA),-DGIT_SHA=$(GIT_SHA)) $(if $(GIT_DATE),-DGIT_DATE=$(GIT_DATE))) -c -o $@ $<
+# Force recompilation to ensure version info is up-to-date
+misc.o: FORCE
+FORCE:
 
 clang-profile-make:
 	$(MAKE) ARCH=$(ARCH) COMP=$(COMP) \
@@ -1225,105 +1160,5 @@ icx-profile-use:
 	-@$(CXX) $(DEPENDFLAGS) -MM $(SRCS) > $@ 2> /dev/null
 
 ifeq (, $(filter $(MAKECMDGOALS), help strip install clean net objclean profileclean format config-sanity))
-ifeq ($(UNIVERSAL_BUILD),false)
 -include .depend
 endif
-endif
-
-### ==========================================================================
-### Section 6. Universal binary driver
-### ==========================================================================
-#
-# Usage:
-#   make -j ARCH=x86-64-universal build          # non-PGO
-#   make -j ARCH=x86-64-universal profile-build  # PGO (use RUN_PREFIX for intel SDE)
-
-TEMP_DIR             := $(CURDIR)/temp_builds
-UNIVERSAL_EXE        := $(CURDIR)/$(EXE)
-
-ifeq ($(UNIVERSAL_BUILD),true)
-
-UNIVERSAL_ARCHES := x86-64 x86-64-sse41-popcnt x86-64-avx2 x86-64-bmi2 \
-                    x86-64-avxvnni x86-64-avx512 x86-64-vnni512 x86-64-avx512icl
-
-# GCC 15+ required for #embed
-GCC_MAJOR := $(shell $(CXX) -dumpversion 2>/dev/null | cut -d. -f1)
-ifneq ($(shell test "$(GCC_MAJOR)" -ge 15 2>/dev/null && echo ok),ok)
-$(error Universal build needs GCC 15+ for \#embed support; CXX=$(CXX) reports version '$(GCC_MAJOR)')
-endif
-
-UNIVERSAL_SRC_DIR    := $(CURDIR)/universal
-NNUE_EMBED_OBJ       := $(TEMP_DIR)/nnue_embed.o
-UNIVERSAL_ENTRY_OBJ  := $(TEMP_DIR)/entry_x86.o
-NET_SENTINEL         := $(TEMP_DIR)/.net-done
-
-# Top-level tracked items in src/ (directories and files)
-TRACKED_TOP := $(shell git -C $(CURDIR) ls-files 2>/dev/null | awk -F/ '{print $$1}' | sort -u)
-
-# Baseline x86-64 must come first in the final link (Windows --allow-multiple-definition
-# uses the first copy of inline duplicates)
-ARCH_OBJS := $(TEMP_DIR)/x86-64/stockfish.o \
-             $(patsubst %,$(TEMP_DIR)/%/stockfish.o,$(filter-out x86-64,$(UNIVERSAL_ARCHES)))
-
-UNIVERSAL_FINAL_FLAGS := -fno-exceptions -Os -static-libstdc++ -static-libgcc -Wno-c++26-extensions
-ifeq ($(KERNEL),Linux)
-    UNIVERSAL_FINAL_FLAGS += -lrt -lpthread
-else
-    UNIVERSAL_FINAL_FLAGS += -Wl,--allow-multiple-definition -static
-endif
-
-# $(call arch-namespace,x86-64-avx2) => Stockfish_x86_64_avx2
-arch-suffix     = $(subst -,_,$(1))
-arch-namespace  = Stockfish_$(call arch-suffix,$(1))
-# Itanium ABI mangled name for Stockfish_<suffix>::main(int, char**)
-arch-mangled    = _ZN$(shell printf %s '$(call arch-namespace,$(1))' | wc -c)$(call arch-namespace,$(1))4mainEiPPc
-
-arch-cxxflags   = --embed-dir=$(CURDIR) -DStockfish=$(call arch-namespace,$(1)) -DUNIVERSAL_BINARY \
-                  -Wl,--defsym=main=$(call arch-mangled,$(1)) -Wno-c++26-extensions
-
-UOBJ_TGT ?= universal-object-pgo
-
-.PHONY: build profile-build universal-clean
-build:         UOBJ_TGT := universal-object-nopgo
-build:         $(UNIVERSAL_EXE)
-profile-build: UOBJ_TGT := universal-object-pgo
-profile-build: $(UNIVERSAL_EXE)
-
-$(TEMP_DIR):
-	@mkdir -p $@
-
-# Download nnue files once in src/ (reused by every sub-arch via --embed-dir).
-$(NET_SENTINEL): | $(TEMP_DIR)
-	@cd $(CURDIR) && $(SHELL) ../scripts/net.sh
-	@touch $@
-
-$(NNUE_EMBED_OBJ): $(UNIVERSAL_SRC_DIR)/nnue_embed.cpp $(NET_SENTINEL) | $(TEMP_DIR)
-	$(CXX) -O2 -Wno-c++26-extensions --embed-dir=$(CURDIR) -c $< -o $@
-
-$(UNIVERSAL_ENTRY_OBJ): $(UNIVERSAL_SRC_DIR)/entry_x86.cpp | $(TEMP_DIR)
-	$(CXX) -O2 -c $< -o $@
-
-# Symlink tracked top-level items from src/ into temp_builds/<arch>/.
-$(TEMP_DIR)/%/.setup: | $(TEMP_DIR)
-	@rm -rf $(TEMP_DIR)/$*
-	@mkdir -p $(TEMP_DIR)/$*
-	@$(foreach f,$(TRACKED_TOP),ln -s $(CURDIR)/$(f) $(TEMP_DIR)/$*/$(f);)
-	@touch $@
-
-# Per-arch stockfish.o
-.SECONDARY: $(patsubst %,$(TEMP_DIR)/%/.setup,$(UNIVERSAL_ARCHES))
-
-$(TEMP_DIR)/%/stockfish.o: $(TEMP_DIR)/%/.setup $(NNUE_EMBED_OBJ) $(NET_SENTINEL)
-	+ENV_CXXFLAGS='$(ENV_CXXFLAGS) $(call arch-cxxflags,$*)' \
-	    $(MAKE) -C $(TEMP_DIR)/$* $(UOBJ_TGT) \
-	        ARCH=$* CXX=$(CXX) \
-	        NNUE_EMBED_OBJ=$(NNUE_EMBED_OBJ)
-	objcopy --rename-section .init_array=$(call arch-suffix,$*)_init $@
-	objcopy --rename-section .ctors=$(call arch-suffix,$*)_init $@
-	objcopy --set-section-flags $(call arch-suffix,$*)_init=alloc,data $@
-
-$(UNIVERSAL_EXE): $(UNIVERSAL_ENTRY_OBJ) $(NNUE_EMBED_OBJ) $(ARCH_OBJS)
-	$(CXX) -o $@ $(UNIVERSAL_ENTRY_OBJ) $(NNUE_EMBED_OBJ) $(ARCH_OBJS) $(UNIVERSAL_FINAL_FLAGS)
-	@echo "Universal binary built: $@"
-
-endif  # UNIVERSAL_BUILD

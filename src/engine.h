@@ -23,7 +23,6 @@
 #include <cstdint>
 #include <functional>
 #include <map>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -68,8 +67,7 @@ class Engine {
     // blocking call to wait for search to finish
     void wait_for_search_finished();
     // set a new position, moves are in UCI format
-    std::optional<PositionSetError> set_position(const std::string&              fen,
-                                                 const std::vector<std::string>& moves);
+    void set_position(const std::string& fen, const std::vector<std::string>& moves);
 
     // modifiers
 
@@ -87,10 +85,10 @@ class Engine {
 
     // network related
 
-    void                                  verify_networks() const;
-    std::unique_ptr<Eval::NNUE::Networks> get_default_networks() const;
-    void                                  load_big_network(const std::string& file);
-    void                                  load_small_network(const std::string& file);
+    void verify_networks() const;
+    void load_networks();
+    void load_big_network(const std::string& file);
+    void load_small_network(const std::string& file);
     void save_network(const std::pair<std::optional<std::string>, std::string> files[2]);
 
     // utility functions

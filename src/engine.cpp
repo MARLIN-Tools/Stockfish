@@ -48,8 +48,9 @@ namespace Stockfish {
 
 namespace NN = Eval::NNUE;
 
-constexpr int MaxHashMB  = Is64Bit ? 33554432 : 2048;
-int           MaxThreads = std::max(1024, 4 * int(get_hardware_concurrency()));
+constexpr auto StartFEN   = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+constexpr int  MaxHashMB  = Is64Bit ? 33554432 : 2048;
+int            MaxThreads = std::max(1024, 4 * int(get_hardware_concurrency()));
 
 // The default configuration will attempt to group L3 domains up to 32 threads.
 // This size was found to be a good balance between the Elo gain of increased
@@ -62,7 +63,10 @@ Engine::Engine(std::optional<std::string> path) :
     numaContext(NumaConfig::from_system(DefaultNumaPolicy)),
     states(new std::deque<StateInfo>(1)),
     threads(),
-    networks(numaContext, get_default_networks()) {
+    networks(numaContext,
+             // Heap-allocate because sizeof(NN::Networks) is large
+             std::make_unique<NN::Networks>(NN::EvalFile{EvalFileDefaultNameBig, "None", ""},
+                                            NN::EvalFile{EvalFileDefaultNameSmall, "None", ""})) {
 
     pos.set(StartFEN, false, &states->back());
 
@@ -143,8 +147,7 @@ Engine::Engine(std::optional<std::string> path) :
           return std::nullopt;
       }));
 
-    threads.clear();
-    threads.ensure_network_replicated();
+    load_networks();
     resize_threads();
 }
 
@@ -194,26 +197,21 @@ void Engine::set_on_verify_networks(std::function<void(std::string_view)>&& f) {
 
 void Engine::wait_for_search_finished() { threads.main_thread()->wait_for_search_finished(); }
 
-std::optional<PositionSetError> Engine::set_position(const std::string&              fen,
-                                                     const std::vector<std::string>& moves) {
+void Engine::set_position(const std::string& fen, const std::vector<std::string>& moves) {
     // Drop the old state and create a new one
-    states   = StateListPtr(new std::deque<StateInfo>(1));
-    auto err = pos.set(fen, options["UCI_Chess960"], &states->back());
-    if (err.has_value())
-        return err;
+    states = StateListPtr(new std::deque<StateInfo>(1));
+    pos.set(fen, options["UCI_Chess960"], &states->back());
 
     for (const auto& move : moves)
     {
         auto m = UCIEngine::to_move(pos, move);
 
         if (m == Move::none())
-            return PositionSetError("Illegal move: " + move);
+            break;
 
         states->emplace_back();
         pos.do_move(m, states->back());
     }
-
-    return std::nullopt;
 }
 
 // modifiers
@@ -296,16 +294,13 @@ void Engine::verify_networks() const {
     }
 }
 
-std::unique_ptr<Eval::NNUE::Networks> Engine::get_default_networks() const {
-
-    auto networks_ =
-      std::make_unique<NN::Networks>(NN::EvalFile{EvalFileDefaultNameBig, "None", ""},
-                                     NN::EvalFile{EvalFileDefaultNameSmall, "None", ""});
-
-    networks_->big.load(binaryDirectory, "");
-    networks_->small.load(binaryDirectory, "");
-
-    return networks_;
+void Engine::load_networks() {
+    networks.modify_and_replicate([this](NN::Networks& networks_) {
+        networks_.big.load(binaryDirectory, options["EvalFile"]);
+        networks_.small.load(binaryDirectory, options["EvalFileSmall"]);
+    });
+    threads.clear();
+    threads.ensure_network_replicated();
 }
 
 void Engine::load_big_network(const std::string& file) {

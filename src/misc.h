@@ -37,10 +37,6 @@
 #include <type_traits>
 #include <vector>
 
-#if !defined(NO_PREFETCH) && (defined(_MSC_VER) || defined(__INTEL_COMPILER))
-    #include <immintrin.h>
-#endif
-
 #define stringify2(x) #x
 #define stringify(x) stringify2(x)
 
@@ -50,67 +46,10 @@ std::string engine_version_info();
 std::string engine_info(bool to_uci = false);
 std::string compiler_info();
 
-// Prefetch hint enums for explicit call-site control.
-enum class PrefetchRw {
-    READ,
-    WRITE
-};
-
-// NOTE: PrefetchLoc controls locality / cache level, not whether a prefetch
-//       is issued. In particular, PrefetchLoc::NONE maps to a non-temporal /
-//       lowest-locality prefetch (Intel: _MM_HINT_NTA, GCC/Clang: locality = 0)
-//       and therefore still performs a prefetch. To completely disable
-//       prefetching, define NO_PREFETCH so that prefetch() becomes a no-op.
-enum class PrefetchLoc {
-    NONE,      // Non-temporal / no cache locality (still issues a prefetch)
-    LOW,       // Low locality (e.g. T2 / L2)
-    MODERATE,  // Moderate locality (e.g. T1 / L1)
-    HIGH       // High locality (e.g. T0 / closest cache)
-};
-
-// Preloads the given address into cache. This is a non-blocking
+// Preloads the given address in L1/L2 cache. This is a non-blocking
 // function that doesn't stall the CPU waiting for data to be loaded from memory,
 // which can be quite slow.
-#ifdef NO_PREFETCH
-template<PrefetchRw RW = PrefetchRw::READ, PrefetchLoc LOC = PrefetchLoc::HIGH>
-void prefetch(const void*) {}
-#elif defined(_MSC_VER) || defined(__INTEL_COMPILER)
-
-constexpr int get_intel_hint(PrefetchRw rw, PrefetchLoc loc) {
-    if (rw == PrefetchRw::WRITE)
-    {
-    #ifdef _MM_HINT_ET0
-        return _MM_HINT_ET0;
-    #else
-        // Fallback when write-prefetch hint is not available: use T0
-        return _MM_HINT_T0;
-    #endif
-    }
-    switch (loc)
-    {
-    case PrefetchLoc::NONE :
-        return _MM_HINT_NTA;
-    case PrefetchLoc::LOW :
-        return _MM_HINT_T2;
-    case PrefetchLoc::MODERATE :
-        return _MM_HINT_T1;
-    case PrefetchLoc::HIGH :
-        return _MM_HINT_T0;
-    default :
-        return _MM_HINT_T0;
-    }
-}
-
-template<PrefetchRw RW = PrefetchRw::READ, PrefetchLoc LOC = PrefetchLoc::HIGH>
-void prefetch(const void* addr) {
-    _mm_prefetch(static_cast<const char*>(addr), get_intel_hint(RW, LOC));
-}
-#else
-template<PrefetchRw RW = PrefetchRw::READ, PrefetchLoc LOC = PrefetchLoc::HIGH>
-void prefetch(const void* addr) {
-    __builtin_prefetch(addr, static_cast<int>(RW), static_cast<int>(LOC));
-}
-#endif
+void prefetch(const void* addr);
 
 void start_logger(const std::string& fname);
 
@@ -201,12 +140,6 @@ class ValueList {
         assert(size_ < MaxSize);
         values_[size_++] = value;
     }
-    // pushes back value if value < max
-    void push_back_if_lt(const T& value, const T& max) {
-        assert(size_ < MaxSize);
-        values_[size_] = value;
-        size_ += (value < max);
-    }
     const T* begin() const { return values_; }
     const T* end() const { return values_ + size_; }
     const T& operator[](int index) const { return values_[index]; }
@@ -266,17 +199,11 @@ class MultiArray {
     using reverse_iterator       = typename ArrayType::reverse_iterator;
     using const_reverse_iterator = typename ArrayType::const_reverse_iterator;
 
-    constexpr auto&       at(size_type index) { return data_.at(index); }
-    constexpr const auto& at(size_type index) const { return data_.at(index); }
+    constexpr auto&       at(size_type index) noexcept { return data_.at(index); }
+    constexpr const auto& at(size_type index) const noexcept { return data_.at(index); }
 
-    constexpr auto& operator[](size_type index) noexcept {
-        assert(index < Size);
-        return data_[index];
-    }
-    constexpr const auto& operator[](size_type index) const noexcept {
-        assert(index < Size);
-        return data_[index];
-    }
+    constexpr auto&       operator[](size_type index) noexcept { return data_[index]; }
+    constexpr const auto& operator[](size_type index) const noexcept { return data_[index]; }
 
     constexpr auto&       front() noexcept { return data_.front(); }
     constexpr const auto& front() const noexcept { return data_.front(); }
@@ -379,13 +306,14 @@ inline uint64_t mul_hi64(uint64_t a, uint64_t b) {
 #endif
 }
 
-template<typename T1, typename T2>
-inline constexpr T2 interpolate(T1 x, T1 x0, T1 x1, T2 y0, T2 y1) {
-    assert(x0 != x1);
-    return T2(y0 + (y1 - y0) * (x - x0) / (x1 - x0));
+inline std::uint64_t hash_bytes(const char* data, std::size_t size) {
+    // FNV-1a 64-bit
+    const char*   p = data;
+    std::uint64_t h = 14695981039346656037ull;
+    for (std::size_t i = 0; i < size; ++i)
+        h = (h ^ p[i]) * 1099511628211ull;
+    return h;
 }
-
-uint64_t hash_bytes(const char*, size_t);
 
 template<typename T>
 inline std::size_t get_raw_data_hash(const T& value) {
@@ -516,9 +444,7 @@ void move_to_front(std::vector<T>& vec, Predicate pred) {
     #define sf_always_inline
 #endif
 
-#if defined(__clang__)
-    #define sf_assume(cond) __builtin_assume(cond)
-#elif defined(__GNUC__)
+#if defined(__GNUC__) && !defined(__clang__)
     #if __GNUC__ >= 13
         #define sf_assume(cond) __attribute__((assume(cond)))
     #else
@@ -529,19 +455,9 @@ void move_to_front(std::vector<T>& vec, Predicate pred) {
                     __builtin_unreachable(); \
             } while (0)
     #endif
-#elif defined(_MSC_VER)
-    #define sf_assume(cond) __assume(cond)
 #else
     // do nothing for other compilers
     #define sf_assume(cond)
-#endif
-
-#ifdef __GNUC__
-    #define sf_unreachable() __builtin_unreachable()
-#elif defined(_MSC_VER)
-    #define sf_unreachable() __assume(0)
-#else
-    #define sf_unreachable()
 #endif
 
 }  // namespace Stockfish

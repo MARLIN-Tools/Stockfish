@@ -25,8 +25,6 @@
 #include <iosfwd>
 #include <memory>
 #include <new>
-#include <optional>
-#include <stdexcept>
 #include <string>
 
 #include "bitboard.h"
@@ -72,12 +70,6 @@ struct StateInfo {
 // elements are not invalidated upon list resizing.
 using StateListPtr = std::unique_ptr<std::deque<StateInfo>>;
 
-// This error should be used whenever a position is suspected to be unsupported
-// by the engine. In particular positions that may cause hard errors like segmentation fault.
-struct PositionSetError: std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
 // Position class stores information regarding the board representation as
 // pieces, side to move, hash keys, castling info, etc. Important methods are
 // do_move() and undo_move(), used by the search to update node info when
@@ -91,9 +83,9 @@ class Position {
     Position& operator=(const Position&) = delete;
 
     // FEN string input/output
-    std::optional<PositionSetError> set(const std::string& fenStr, bool isChess960, StateInfo* si);
-    std::optional<PositionSetError> set(const std::string& code, Color c, StateInfo* si);
-    std::string                     fen() const;
+    Position&   set(const std::string& fenStr, bool isChess960, StateInfo* si);
+    Position&   set(const std::string& code, Color c, StateInfo* si);
+    std::string fen() const;
 
     // Position representation
     Bitboard pieces() const;  // All pieces
@@ -151,7 +143,7 @@ class Position {
                  const TranspositionTable* tt,
                  const SharedHistories*    worker);
     void undo_move(Move m);
-    void do_null_move(StateInfo& newSt);
+    void do_null_move(StateInfo& newSt, const TranspositionTable& tt);
     void undo_null_move();
 
     // Static Exchange Evaluation

@@ -41,7 +41,7 @@ using PSQFeatureSet    = Features::HalfKAv2_hm;
 
 // Number of input feature dimensions after conversion
 constexpr IndexType TransformedFeatureDimensionsBig = 1024;
-constexpr int       L2Big                           = 31;
+constexpr int       L2Big                           = 15;
 constexpr int       L3Big                           = 32;
 
 constexpr IndexType TransformedFeatureDimensionsSmall = 128;
@@ -109,10 +109,17 @@ struct NetworkArchitecture {
             alignas(CacheLineSize) typename decltype(ac_1)::OutputBuffer ac_1_out;
             alignas(CacheLineSize) typename decltype(fc_2)::OutputBuffer fc_2_out;
 
-            Buffer() { std::memset(ac_sqr_0_out, 0, sizeof(ac_sqr_0_out)); }
+            Buffer() { std::memset(this, 0, sizeof(*this)); }
         };
 
-        Buffer buffer;
+#if defined(__clang__) && (__APPLE__)
+        // workaround for a bug reported with xcode 12
+        static thread_local auto tlsBuffer = std::make_unique<Buffer>();
+        // Access TLS only once, cache result.
+        Buffer& buffer = *tlsBuffer;
+#else
+        alignas(CacheLineSize) static thread_local Buffer buffer;
+#endif
 
         fc_0.propagate(transformedFeatures, buffer.fc_0_out);
         ac_sqr_0.propagate(buffer.fc_0_out, buffer.ac_sqr_0_out);

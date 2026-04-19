@@ -220,11 +220,11 @@ using Depth = int;
 constexpr Depth DEPTH_QS = 0;
 // For transposition table entries where no searching at all was done
 // (whether regular or qsearch) we use DEPTH_UNSEARCHED, which should thus
-// compare lower than any quiescence or regular depth. DEPTH_NONE is used
-// for the transposition table entry occupancy check (see tt.cpp), and
-// should thus be lower than DEPTH_UNSEARCHED.
-constexpr Depth DEPTH_UNSEARCHED = -2;
-constexpr Depth DEPTH_NONE       = -3;
+// compare lower than any quiescence or regular depth. DEPTH_ENTRY_OFFSET
+// is used only for the transposition table entry occupancy check (see tt.cpp),
+// and should thus be lower than DEPTH_UNSEARCHED.
+constexpr Depth DEPTH_UNSEARCHED   = -2;
+constexpr Depth DEPTH_ENTRY_OFFSET = -3;
 
 // clang-format off
 enum Square : uint8_t {
@@ -449,10 +449,6 @@ class Move {
         return Square(data & 0x3F);
     }
 
-    // Same as to_sq() but without assertion, for branchless code paths
-    // where the result is masked/ignored when move is not ok
-    constexpr Square to_sq_unchecked() const { return Square(data & 0x3F); }
-
     constexpr MoveType type_of() const { return MoveType(data & (3 << 14)); }
 
     constexpr PieceType promotion_type() const { return PieceType(((data >> 12) & 3) + KNIGHT); }
@@ -472,9 +468,6 @@ class Move {
     struct MoveHash {
         std::size_t operator()(const Move& m) const { return make_key(m.data); }
     };
-
-    static constexpr int FromSqShift = 6;
-    static constexpr int ToSqShift   = 0;
 
    protected:
     std::uint16_t data;

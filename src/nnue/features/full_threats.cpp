@@ -21,7 +21,6 @@
 #include "full_threats.h"
 
 #include <array>
-#include <cassert>
 #include <cstdint>
 #include <initializer_list>
 #include <utility>
@@ -72,7 +71,7 @@ constexpr auto make_piece_indices_piece() {
 
     for (Square from = SQ_A1; from <= SQ_H8; ++from)
     {
-        Bitboard attacks = PawnPushOrAttacks[C][from];
+        Bitboard attacks = PseudoAttacks[C][from];
 
         for (Square to = SQ_A1; to <= SQ_H8; ++to)
         {
@@ -135,8 +134,8 @@ constexpr auto init_threat_offsets() {
 
             else if (from >= SQ_A2 && from <= SQ_H7)
             {
-                Bitboard attacks =
-                  (pieceIdx < 8) ? PawnPushOrAttacks[WHITE][from] : PawnPushOrAttacks[BLACK][from];
+                Bitboard attacks = (pieceIdx < 8) ? pawn_attacks_bb<WHITE>(square_bb(from))
+                                                  : pawn_attacks_bb<BLACK>(square_bb(from));
                 cumulativePieceOffset += constexpr_popcount(attacks);
             }
         }
@@ -209,11 +208,10 @@ inline sf_always_inline IndexType FullThreats::make_index(
 void FullThreats::append_active_indices(Color perspective, const Position& pos, IndexList& active) {
     Square   ksq      = pos.square<KING>(perspective);
     Bitboard occupied = pos.pieces();
-    Bitboard pawns    = pos.pieces(PAWN);
 
     for (Color color : {WHITE, BLACK})
     {
-        for (PieceType pt = PAWN; pt < KING; ++pt)
+        for (PieceType pt = PAWN; pt <= KING; ++pt)
         {
             Color    c        = Color(perspective ^ color);
             Piece    attacker = make_piece(c, pt);
@@ -235,7 +233,8 @@ void FullThreats::append_active_indices(Color perspective, const Position& pos, 
                     Piece     attacked = pos.piece_on(to);
                     IndexType index    = make_index(perspective, attacker, from, to, attacked, ksq);
 
-                    active.push_back_if_lt(index, Dimensions);
+                    if (index < Dimensions)
+                        active.push_back(index);
                 }
 
                 while (attacks_right)
@@ -245,20 +244,8 @@ void FullThreats::append_active_indices(Color perspective, const Position& pos, 
                     Piece     attacked = pos.piece_on(to);
                     IndexType index    = make_index(perspective, attacker, from, to, attacked, ksq);
 
-                    active.push_back_if_lt(index, Dimensions);
-                }
-
-                // Set of pawns which are prevented from movement by a pawn in front of them
-                Bitboard pushers = pawn_single_push_bb(~c, pawns) & pos.pieces(c, PAWN);
-                while (pushers)
-                {
-                    Square from     = pop_lsb(pushers);
-                    Square to       = from + pawn_push(c);
-                    Piece  attacked = pos.piece_on(to);
-                    assert(type_of(attacked) == PAWN);
-
-                    IndexType index = make_index(perspective, attacker, from, to, attacked, ksq);
-                    active.push_back_if_lt(index, Dimensions);
+                    if (index < Dimensions)
+                        active.push_back(index);
                 }
             }
             else
@@ -275,7 +262,8 @@ void FullThreats::append_active_indices(Color perspective, const Position& pos, 
                         IndexType index =
                           make_index(perspective, attacker, from, to, attacked, ksq);
 
-                        active.push_back_if_lt(index, Dimensions);
+                        if (index < Dimensions)
+                            active.push_back(index);
                     }
                 }
             }
@@ -285,15 +273,13 @@ void FullThreats::append_active_indices(Color perspective, const Position& pos, 
 
 // Get a list of indices for recently changed features
 
-void FullThreats::append_changed_indices(Color                   perspective,
-                                         Square                  ksq,
-                                         const DiffType&         diff,
-                                         IndexList&              removed,
-                                         IndexList&              added,
-                                         FusedUpdateData*        fusedData,
-                                         bool                    first,
-                                         const ThreatWeightType* prefetchBase,
-                                         IndexType               prefetchStride) {
+void FullThreats::append_changed_indices(Color            perspective,
+                                         Square           ksq,
+                                         const DiffType&  diff,
+                                         IndexList&       removed,
+                                         IndexList&       added,
+                                         FusedUpdateData* fusedData,
+                                         bool             first) {
 
     for (const auto& dirty : diff.list)
     {
@@ -337,10 +323,8 @@ void FullThreats::append_changed_indices(Color                   perspective,
         auto&           insert = add ? added : removed;
         const IndexType index  = make_index(perspective, attacker, from, to, attacked, ksq);
 
-        if (prefetchBase)
-            prefetch<PrefetchRw::READ, PrefetchLoc::LOW>(reinterpret_cast<const void*>(
-              reinterpret_cast<uintptr_t>(prefetchBase) + index * prefetchStride));
-        insert.push_back_if_lt(index, Dimensions);
+        if (index < Dimensions)
+            insert.push_back(index);
     }
 }
 
