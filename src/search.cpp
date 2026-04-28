@@ -236,7 +236,13 @@ void Search::Worker::start_searching() {
       Skill(options["Skill Level"], options["UCI_LimitStrength"] ? int(options["UCI_Elo"]) : 0);
 
     if (!limits.depth && !skill.enabled())
-        bestThread = threads.get_best_thread()->worker.get();
+    {
+        Worker* candidate = threads.get_best_thread()->worker.get();
+
+        if (!candidate->rootMoves.empty() && !candidate->rootMoves[0].pv.empty()
+            && rootPos.legal(candidate->rootMoves[0].pv[0]))
+            bestThread = candidate;
+    }
 
     main_manager()->bestPreviousScore        = bestThread->rootMoves[0].score;
     main_manager()->bestPreviousAverageScore = bestThread->rootMoves[0].averageScore;
