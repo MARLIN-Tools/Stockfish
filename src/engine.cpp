@@ -119,6 +119,13 @@ Engine::Engine(std::optional<std::string> path) :
 
     options.add("UCI_ShowWDL", Option(false));
 
+    options.add("MainRepetitionContempt", Option(200, -200, 200));
+    options.add("MainImmediateDrawContempt", Option(200, -200, 200));
+    options.add("MainStalemateContempt", Option(200, -200, 200));
+    options.add("QSRepetitionContempt", Option(200, -200, 200));
+    options.add("QSImmediateDrawContempt", Option(200, -200, 200));
+    options.add("QSStalemateContempt", Option(200, -200, 200));
+
     options.add(  //
       "SyzygyPath", Option("", [](const Option& o) {
           Tablebases::init(o);
