@@ -1452,7 +1452,7 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : VALUE_DRAW;
+        bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : value_draw(nodes);
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1580,7 +1580,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 
     // Step 2. Check for an immediate draw or maximum ply reached
     if (pos.is_draw(ss->ply) || ss->ply >= MAX_PLY)
-        return (ss->ply >= MAX_PLY && !ss->inCheck) ? evaluate(pos) : VALUE_DRAW;
+        return (ss->ply >= MAX_PLY && !ss->inCheck) ? evaluate(pos) : value_draw(nodes);
 
     assert(0 <= ss->ply && ss->ply < MAX_PLY);
 
@@ -1754,7 +1754,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         if (!(pawn_single_push_bb(us, pos.pieces(us, PAWN)) & ~pos.pieces())
             && !pos.non_pawn_material(us) && type_of(pos.captured_piece()) >= KNIGHT
             && !MoveList<LEGAL>(pos).size())
-            bestValue = VALUE_DRAW;
+            bestValue = value_draw(nodes);
     }
 
     if (!is_decisive(bestValue) && bestValue > beta)
