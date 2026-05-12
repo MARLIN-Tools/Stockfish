@@ -73,8 +73,14 @@ constexpr uint64_t NODES_LIMIT_OUTPUT = 10'000'000;
 constexpr int SEARCHEDLIST_CAPACITY = 32;
 using SearchedList                  = ValueList<Move, SEARCHEDLIST_CAPACITY>;
 
-int DrawContempt = 20;
-TUNE(SetRange(-200, 200), DrawContempt);
+int MainRepetitionContempt   = 20;
+int MainImmediateDrawContempt = 20;
+int MainStalemateContempt    = 20;
+int QSRepetitionContempt     = 20;
+int QSImmediateDrawContempt  = 20;
+int QSStalemateContempt      = 20;
+TUNE(SetRange(-200, 200), MainRepetitionContempt, MainImmediateDrawContempt,
+     MainStalemateContempt, QSRepetitionContempt, QSImmediateDrawContempt, QSStalemateContempt);
 
 // (*Scalers):
 // The values with Scaler asterisks have proven non-linear scaling.
@@ -132,7 +138,9 @@ void update_correction_history(const Position& pos,
 }
 
 // Add a small random component to draw evaluations to avoid 3-fold blindness
-Value value_draw(size_t nodes) { return VALUE_DRAW - Value(DrawContempt) - 1 + Value(nodes & 0x2); }
+Value value_draw(size_t nodes, int contempt) {
+    return VALUE_DRAW - Value(contempt) - 1 + Value(nodes & 0x2);
+}
 Value value_to_tt(Value v, int ply);
 Value value_from_tt(Value v, int ply, int r50c);
 void  update_continuation_histories(Stack* ss, Piece pc, Square to, int bonus);
@@ -666,7 +674,7 @@ Value Search::Worker::search(
     // Check if we have an upcoming move that draws by repetition
     if (!rootNode && alpha < VALUE_DRAW && pos.upcoming_repetition(ss->ply))
     {
-        alpha = value_draw(nodes);
+        alpha = value_draw(nodes, MainRepetitionContempt);
         if (alpha >= beta)
             return alpha;
     }
@@ -718,7 +726,7 @@ Value Search::Worker::search(
             || ss->ply >= MAX_PLY)
             return (ss->ply >= MAX_PLY && !ss->inCheck)
                    ? evaluate(pos)
-                   : value_draw(nodes);
+                   : value_draw(nodes, MainImmediateDrawContempt);
 
         // Step 3. Mate distance pruning. Even if we mate at the next move our score
         // would be at best mate_in(ss->ply + 1), but if alpha is already bigger because
@@ -1452,7 +1460,9 @@ moves_loop:  // When in check, search starts here
         bestValue = (bestValue * depth + beta) / (depth + 1);
 
     if (!moveCount)
-        bestValue = excludedMove ? alpha : ss->inCheck ? mated_in(ss->ply) : value_draw(nodes);
+        bestValue = excludedMove ? alpha
+                                  : ss->inCheck ? mated_in(ss->ply)
+                                                : value_draw(nodes, MainStalemateContempt);
 
     // If there is a move that produces search value greater than alpha,
     // we update the stats of searched moves.
@@ -1549,7 +1559,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     // Check if we have an upcoming move that draws by repetition
     if (alpha < VALUE_DRAW && pos.upcoming_repetition(ss->ply))
     {
-        alpha = value_draw(nodes);
+        alpha = value_draw(nodes, QSRepetitionContempt);
         if (alpha >= beta)
             return alpha;
     }
@@ -1580,7 +1590,8 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 
     // Step 2. Check for an immediate draw or maximum ply reached
     if (pos.is_draw(ss->ply) || ss->ply >= MAX_PLY)
-        return (ss->ply >= MAX_PLY && !ss->inCheck) ? evaluate(pos) : value_draw(nodes);
+        return (ss->ply >= MAX_PLY && !ss->inCheck) ? evaluate(pos)
+                                                    : value_draw(nodes, QSImmediateDrawContempt);
 
     assert(0 <= ss->ply && ss->ply < MAX_PLY);
 
@@ -1754,7 +1765,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
         if (!(pawn_single_push_bb(us, pos.pieces(us, PAWN)) & ~pos.pieces())
             && !pos.non_pawn_material(us) && type_of(pos.captured_piece()) >= KNIGHT
             && !MoveList<LEGAL>(pos).size())
-            bestValue = value_draw(nodes);
+            bestValue = value_draw(nodes, QSStalemateContempt);
     }
 
     if (!is_decisive(bestValue) && bestValue > beta)
