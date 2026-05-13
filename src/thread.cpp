@@ -351,12 +351,48 @@ Thread* ThreadPool::get_best_thread() const {
     Thread* bestThread = threads.front().get();
     Value   minScore   = VALUE_NONE;
 
+    auto has_legal_root_pv = [](const Thread* th) {
+        const auto& rootMoves = th->worker->rootMoves;
+        return !rootMoves.empty() && !rootMoves[0].pv.empty()
+            && th->worker->rootPos.legal(rootMoves[0].pv[0]);
+    };
+
+    bool allThreadsHaveLegalRootPv = true;
+    for (auto&& th : threads)
+        if (!has_legal_root_pv(th.get()))
+        {
+            allThreadsHaveLegalRootPv = false;
+            break;
+        }
+
+    if (!allThreadsHaveLegalRootPv)
+    {
+        bestThread = nullptr;
+
+        for (auto&& th : threads)
+        {
+            Thread* thread = th.get();
+            if (!has_legal_root_pv(thread))
+                continue;
+
+            if (!bestThread)
+                bestThread = thread;
+
+            minScore = std::min(minScore, thread->worker->rootMoves[0].score);
+        }
+
+        if (!bestThread)
+            return threads.front().get();
+    }
+    else
+    {
+        // Find the minimum score of all threads
+        for (auto&& th : threads)
+            minScore = std::min(minScore, th->worker->rootMoves[0].score);
+    }
+
     std::unordered_map<Move, int64_t, Move::MoveHash> votes(
       2 * std::min(size(), bestThread->worker->rootMoves.size()));
-
-    // Find the minimum score of all threads
-    for (auto&& th : threads)
-        minScore = std::min(minScore, th->worker->rootMoves[0].score);
 
     // Vote according to score and depth, and select the best thread
     auto thread_voting_value = [minScore](Thread* th) {
@@ -364,12 +400,22 @@ Thread* ThreadPool::get_best_thread() const {
     };
 
     for (auto&& th : threads)
-        votes[th->worker->rootMoves[0].pv[0]] += thread_voting_value(th.get());
+    {
+        Thread* thread = th.get();
+        if (!allThreadsHaveLegalRootPv && !has_legal_root_pv(thread))
+            continue;
+
+        votes[thread->worker->rootMoves[0].pv[0]] += thread_voting_value(thread);
+    }
 
     for (auto&& th : threads)
     {
+        Thread* thread = th.get();
+        if (!allThreadsHaveLegalRootPv && !has_legal_root_pv(thread))
+            continue;
+
         const auto& bestThreadMove = bestThread->worker->rootMoves[0];
-        const auto& newThreadMove  = th->worker->rootMoves[0];
+        const auto& newThreadMove  = thread->worker->rootMoves[0];
 
         const auto bestThreadMoveVote = votes[bestThreadMove.pv[0]];
         const auto newThreadMoveVote  = votes[newThreadMove.pv[0]];
@@ -384,7 +430,7 @@ Thread* ThreadPool::get_best_thread() const {
 
         // We make sure not to pick a thread with a truncated principal variation.
         const bool betterVotingValue =
-          thread_voting_value(th.get()) * int(newThreadMove.pv.size() > 2)
+          thread_voting_value(thread) * int(newThreadMove.pv.size() > 2)
           > thread_voting_value(bestThread) * int(bestThreadMove.pv.size() > 2);
 
         if (bestThreadDecisive)
@@ -395,14 +441,14 @@ Thread* ThreadPool::get_best_thread() const {
                 assert((is_win(bestThreadMove.score) && is_win(newThreadMove.score))
                        || (is_loss(bestThreadMove.score) && is_loss(newThreadMove.score)));
 
-                bestThread = th.get();
+                bestThread = thread;
             }
         }
         else if (newThreadDecisive
                  || (!is_loss(newThreadMove.score)
                      && (newThreadMoveVote > bestThreadMoveVote
                          || (newThreadMoveVote == bestThreadMoveVote && betterVotingValue))))
-            bestThread = th.get();
+            bestThread = thread;
     }
 
     return bestThread;
